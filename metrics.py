@@ -6,6 +6,7 @@ from torchvision import models
 import torchvision.transforms.functional as F
 
 import os
+import pickle
 
 import numpy as np
 from scipy.linalg import sqrtm
@@ -27,13 +28,20 @@ class Metrics:
         self.inception_model.load_state_dict(torch.load(os.path.join('./save/iception_v3', f'loss_bset.pt')))
         self.inception_model.to(self.device)
         
-        self.real_features = self.__extract_features(real_images, real=True)
+        save_path = os.path.join('./data', 'metric_data.pikl')
+        if os.path.exists(save_path):
+            with open(save_path, 'rb') as f:
+                self.real_features = pickle.load(f)
+        else:
+            self.real_features = self.__extract_features(real_images, real=True)
+            with open(save_path, 'wb') as f:
+                pickle.dump(self.real_features, f, pickle.HIGHEST_PROTOCOL)
         
         
     def __extract_features(self, images, real=False, softmax=False):
         self.inception_model.eval()
         features = []
-        for image in tqdm(images, desc='fid'):
+        for image in images:
             if real: image = image[0]
             image = image.to(self.device)
             with torch.no_grad():
@@ -78,9 +86,9 @@ class Metrics:
         return diff + np.trace(sigma1 + sigma2 - 2.0 * covmean)
 
 
-    def intra_fid(self, generated_images, classes):
+    def intra_fid(self, generated_images):
         split_scores = 0
-        for class_name in classes:
-            fid_score = self.fid(generated_images[class_name])
+        for class_name in range(0, 100, 10):
+            fid_score = self.fid(torch.utils.data.DataLoader(generated_images[class_name * 10:(class_name + 1) * 10], batch_size=128))
             split_scores += fid_score
-        return split_scores / len(classes)
+        return split_scores / 100

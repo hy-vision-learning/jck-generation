@@ -13,7 +13,7 @@ class OneHotEncoder:
         self.label_count = label_count
     
     def __call__(self, label):
-        return torch.FloatTensor([1 if i == label else 0 for i in range(self.label_count)])
+        return torch.LongTensor([1 if i == label else 0 for i in range(self.label_count)])
 
 
 class CGANDataPreprocessor:

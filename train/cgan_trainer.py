@@ -49,8 +49,8 @@ class CGANTrainer(Trainer):
         self.lambda_gp = 10.0
         
         with torch.no_grad():
-            self.logger.debug(f"Generator:\n{summary(self.model_g, input_size=(1, 200, 1, 1))}")
-            self.logger.debug(f"Discriminator: {summary(self.model_d, input_size=(1, 103, 64, 64))}")
+            self.logger.debug(f"Generator:\n{summary(self.model_g, input_size=[(1, 100, 1, 1), (1, 100)], dtypes=[torch.float, torch.long])}")
+            self.logger.debug(f"Discriminator: {summary(self.model_d, input_size=[(1, 3, 64, 64), (1, 100)], dtypes=[torch.float, torch.long])}")
         self.model_g.apply(weights_init)
         self.model_d.apply(weights_init)
 
@@ -137,19 +137,17 @@ class CGANTrainer(Trainer):
         iters = 0
         
         fixed_noise = []
+        fixed_labels = []
         for i in range(100):
             noise = torch.randn(10, 100, 1, 1, device=self.device)
+            labels_data = torch.LongTensor([1 if i == j else 0 for j in range(100)]).repeat(10, 1).to(self.device)
             
-            labels_data = torch.FloatTensor([1 if i == j else 0 for j in range(100)]).repeat(10, 1)
-            image_one_hot_labels = labels_data[:, :, None, None]
-            # image_one_hot_labels = image_one_hot_labels.repeat(1, 64, 64, 1)
-            image_one_hot_labels = image_one_hot_labels.to(self.device)
-            
-            noise_label_concat = torch.cat([noise, image_one_hot_labels], dim=1)
-            fixed_noise.append(noise_label_concat)
+            fixed_noise.append(noise)
+            fixed_labels.append(labels_data)
         fixed_noise = torch.vstack(fixed_noise)
+        fixed_labels = torch.vstack(fixed_labels)
         
-        low_fid = 1e10
+        low_fid = low_intra_fid = 1e10
         high_is = 0
         
         real_batch = next(iter(real_images_loader))
@@ -173,33 +171,22 @@ class CGANTrainer(Trainer):
                 real_data = real_data.to(self.device)
                 labels_data = labels_data.to(self.device)
                 
-                image_one_hot_labels = labels_data[:, None, None, :].repeat(1, 64, 64, 1).permute(0, 3, 1, 2)
-                
                 b_size = real_data.size(0)
                 label = torch.full((b_size,), label_real, dtype=torch.float32, device=self.device)
                 real_data = 0.9 * real_data + 0.1 * torch.randn((real_data.size()), device=self.device)
                 
-                real_label_concat = torch.cat([real_data, image_one_hot_labels], dim=1)
-                
-                output = self.model_d(real_label_concat).view(-1)
+                output = self.model_d(real_data, labels_data.detach()).view(-1)
                 real_error_d = self.criterion(output, label)
                 real_error_d.backward()
                 x_d = output.mean().item()
-
-
-                fake_one_hot_labels = labels_data[:, None, None, :].permute(0, 3, 1, 2)
-                # self.logger.debug(f'{fake_one_hot_labels[0]}, {fake_one_hot_labels.shape}')
+                
                 
                 noise = torch.randn(b_size, 100, 1, 1, device=self.device)
-                noise_label_concat = torch.cat([noise, fake_one_hot_labels], dim=1)
-                # self.logger.debug(f'{noise_label_concat[0]}, {noise_label_concat.shape}')
-                
-                fake = self.model_g(noise_label_concat)
+                fake = self.model_g(noise, labels_data.detach())
                 label.fill_(label_fake)
                 fake = 0.9 * fake + 0.1 * torch.randn((fake.size()), device=self.device)
-                fake_label_concat = torch.cat([fake.detach(), image_one_hot_labels], dim=1)
                 
-                output = self.model_d(fake_label_concat).view(-1)
+                output = self.model_d(fake.detach(), labels_data.detach()).view(-1)
                 fake_error_d = self.criterion(output, label)
                 fake_error_d.backward()
                 z1_gd = output.mean().item()
@@ -214,7 +201,7 @@ class CGANTrainer(Trainer):
                 self.model_g.zero_grad()
                 label.fill_(label_real)
                 
-                output = self.model_d(fake_label_concat).view(-1)
+                output = self.model_d(fake, labels_data).view(-1)
                 error_g = self.criterion(output, label)
                 error_g.backward()
                 z2_gd = output.mean().item()
@@ -229,7 +216,7 @@ class CGANTrainer(Trainer):
 
                 if (iters % 500 == 0) or ((epoch == self.epoch - 1) and (i == len(real_images_loader) - 1)):
                     with torch.no_grad():
-                        generated_fake = self.model_g(fixed_noise).detach().cpu()
+                        generated_fake = self.model_g(fixed_noise, fixed_labels).detach().cpu()
                     
                     generated_fake = 0.5 * generated_fake + 0.5
                     generated_fake = F.resize(generated_fake, [299, 299])
@@ -240,13 +227,18 @@ class CGANTrainer(Trainer):
                     
                     inception_score = self.metric.inception_score(torch.utils.data.DataLoader(generated_fake, batch_size=128))
                     fid = self.metric.fid(torch.utils.data.DataLoader(generated_fake, batch_size=128))
+                    intra_fid = self.metric.intra_fid(generated_fake)
                     
-                    self.logger.debug(f'inception score: {inception_score}\tfid: {fid}')
+                    self.logger.debug(f'inception score: {inception_score}\tfid: {fid}\tintra fid: {intra_fid}')
                     
                     if low_fid > fid:
                         low_fid = fid
                         self.logger.debug(f"{iters} lowest fid")
                         self.save_model('fid', iters, low_fid, generated_fake[::10])
+                    if low_intra_fid > intra_fid:
+                        low_intra_fid = intra_fid
+                        self.logger.debug(f"{iters} lowest intra fid")
+                        self.save_model('intra_fid', iters, low_intra_fid, generated_fake[::10])
                     if high_is < inception_score:
                         high_is = inception_score
                         self.logger.debug(f"{iters} highest is")
