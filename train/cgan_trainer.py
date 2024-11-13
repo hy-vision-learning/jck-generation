@@ -69,7 +69,7 @@ class CGANTrainer(Trainer):
         self.logger.debug(f'save path: {self.model_save_path}')
         
     
-    def save_model(self, typ, iters, value, images):
+    def save_model(self, typ, iters, inception_score, fid, intra_fid, images):
         save_path = os.path.join(self.model_save_path, typ)
         if not os.path.exists(save_path):
             os.makedirs(save_path)
@@ -84,11 +84,11 @@ class CGANTrainer(Trainer):
             'model_d': self.model_d.state_dict(),
             'optimizer_g': self.optimizer_g.state_dict(),
             'optimizer_d': self.optimizer_d.state_dict()
-        }, os.path.join(save_path, f'{iters}_{value:.04f}.pt'))
+        }, os.path.join(save_path, f'{iters}_{inception_score:.04f}_{fid:.04f}_{intra_fid:.04f}.pt'))
         
         self.save_image(save_path, iters, images)
         
-        self.logger.debug(f'{iters} model save')
+        # self.logger.debug(f'{iters} model save')
         
     def save_image(self, path, iters, images):
         plt.clf()
@@ -234,15 +234,15 @@ class CGANTrainer(Trainer):
                     if low_fid > fid:
                         low_fid = fid
                         self.logger.debug(f"{iters} lowest fid")
-                        self.save_model('fid', iters, low_fid, generated_fake[::10])
+                        self.save_model('fid', iters, inception_score, fid, intra_fid, generated_fake[::10])
                     if low_intra_fid > intra_fid:
                         low_intra_fid = intra_fid
                         self.logger.debug(f"{iters} lowest intra fid")
-                        self.save_model('intra_fid', iters, low_intra_fid, generated_fake[::10])
+                        self.save_model('intra_fid', iters, inception_score, fid, intra_fid, generated_fake[::10])
                     if high_is < inception_score:
                         high_is = inception_score
                         self.logger.debug(f"{iters} highest is")
-                        self.save_model('is', iters, high_is, generated_fake[::10])
+                        self.save_model('is', iters, inception_score, fid, intra_fid, generated_fake[::10])
                         
                     self.save_image(image_save_path, iters, generated_fake[::10])
                     
