@@ -25,6 +25,8 @@ from change_randomseed import RANDOMSEED
 from logger.main_logger import MainLogger
 from enums import ModelEnum
 
+torch.autograd.set_detect_anomaly(True)
+
 
 random.seed(RANDOMSEED)
 os.environ["PYTHONHASHSEED"] = str(RANDOMSEED)
@@ -60,6 +62,15 @@ def get_arg_parse():
 
 
 def main(args: argparse.Namespace):
+    if args.model_path != '':
+        datetime_now = args.model_path
+    else:
+        datetime_now = datetime.now().strftime("%Y%m%d_%H%M%S")
+    model_save_path = os.path.join('.', 'save', str(args.model).lower(), datetime_now)
+    if not os.path.exists(model_save_path):
+        os.makedirs(model_save_path)
+    args.save_path = model_save_path
+        
     logger = MainLogger(args)
     logger.debug(f'args: {vars(args)}')
 

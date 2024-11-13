@@ -63,11 +63,7 @@ class CGANTrainer(Trainer):
         
         self.criterion = nn.BCELoss()
         
-        if args.model_path != '':
-            datetime_now = args.model_path
-        else:
-            datetime_now = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.model_save_path = os.path.join('.', 'save', 'cgan', datetime_now)
+        self.model_save_path = args.save_path
         if not os.path.exists(self.model_save_path):
             os.makedirs(self.model_save_path)
         self.logger.debug(f'save path: {self.model_save_path}')
@@ -90,13 +86,16 @@ class CGANTrainer(Trainer):
             'optimizer_d': self.optimizer_d.state_dict()
         }, os.path.join(save_path, f'{iters}_{value:.04f}.pt'))
         
+        self.save_image(save_path, iters, images)
+        
+        self.logger.debug(f'{iters} model save')
+        
+    def save_image(self, path, iters, images):
         plt.clf()
         plt.axis("off")
         plt.title("fake images")
         plt.imshow(np.transpose(vutils.make_grid(images, padding=2, normalize=True, nrow=10),(1,2,0)))
-        plt.savefig(os.path.join(save_path, f'{iters}_fake_image.png'))
-        
-        self.logger.debug(f'{iters} model save')
+        plt.savefig(os.path.join(path, f'{iters}_fake_image.png'))
         
     
     # def load_model(self, typ):
@@ -136,7 +135,7 @@ class CGANTrainer(Trainer):
         label_real = 0.9
         label_fake = 0.1
         iters = 0
-        fixed_noise = torch.randn(64, 100, 1, 1, device=self.device)
+        
         fixed_noise = []
         for i in range(100):
             noise = torch.randn(10, 100, 1, 1, device=self.device)
@@ -159,6 +158,10 @@ class CGANTrainer(Trainer):
         plt.imshow(np.transpose(vutils.make_grid(real_batch[0].to(self.device)[:64], padding=5, normalize=True).cpu(),(1,2,0)))
         plt.savefig(os.path.join(self.model_save_path, 'real_image.png'))
         
+        image_save_path = os.path.join(self.model_save_path, 'img')
+        if not os.path.exists(image_save_path):
+            os.makedirs(image_save_path)
+        
         start = time.time()
 
         self.logger.debug("train start")
@@ -170,9 +173,7 @@ class CGANTrainer(Trainer):
                 real_data = real_data.to(self.device)
                 labels_data = labels_data.to(self.device)
                 
-                image_one_hot_labels = labels_data[:, None, None, :]
-                image_one_hot_labels = image_one_hot_labels.repeat(1, 64, 64, 1)
-                image_one_hot_labels = image_one_hot_labels.permute(0, 3, 1, 2)
+                image_one_hot_labels = labels_data[:, None, None, :].repeat(1, 64, 64, 1).permute(0, 3, 1, 2)
                 
                 b_size = real_data.size(0)
                 label = torch.full((b_size,), label_real, dtype=torch.float32, device=self.device)
@@ -186,10 +187,12 @@ class CGANTrainer(Trainer):
                 x_d = output.mean().item()
 
 
-                fake_one_hot_labels = labels_data[:, None, None, :]
-                fake_one_hot_labels = fake_one_hot_labels.permute(0, 3, 1, 2)
+                fake_one_hot_labels = labels_data[:, None, None, :].permute(0, 3, 1, 2)
+                # self.logger.debug(f'{fake_one_hot_labels[0]}, {fake_one_hot_labels.shape}')
+                
                 noise = torch.randn(b_size, 100, 1, 1, device=self.device)
                 noise_label_concat = torch.cat([noise, fake_one_hot_labels], dim=1)
+                # self.logger.debug(f'{noise_label_concat[0]}, {noise_label_concat.shape}')
                 
                 fake = self.model_g(noise_label_concat)
                 label.fill_(label_fake)
@@ -202,8 +205,10 @@ class CGANTrainer(Trainer):
                 z1_gd = output.mean().item()
 
                 
-                gradient_penalty = self.compute_gradient_penalty(real_label_concat, fake_label_concat)
-                error_d = real_error_d + fake_error_d + self.lambda_gp * gradient_penalty
+                # gradient_penalty = self.compute_gradient_penalty(real_label_concat, fake_label_concat)
+                # error_d = real_error_d + fake_error_d + self.lambda_gp * gradient_penalty
+                error_d = real_error_d + fake_error_d
+                # gradient_penalty.backward()
                 self.optimizer_d.step()
 
                 self.model_g.zero_grad()
@@ -244,8 +249,10 @@ class CGANTrainer(Trainer):
                         self.save_model('fid', iters, low_fid, generated_fake[::10])
                     if high_is < inception_score:
                         high_is = inception_score
-                        self.logger.debug(f"{iters} highest fid")
+                        self.logger.debug(f"{iters} highest is")
                         self.save_model('is', iters, high_is, generated_fake[::10])
+                        
+                    self.save_image(image_save_path, iters, generated_fake[::10])
                     
                 iters += 1
 

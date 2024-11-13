@@ -31,7 +31,7 @@ class MainLogger:  # Singleton
         self.logger.addHandler(handler)
 
         if args.log_file == 1:
-            log_save_path = "./log"
+            log_save_path = args.save_path
             if not os.path.exists(log_save_path):
                 os.makedirs(log_save_path)
 
