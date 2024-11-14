@@ -56,7 +56,7 @@ class CGANDataPreprocessor:
         
         label_count = len(self.__trainset.classes)
         self.__trainset.target_transform = OneHotEncoder(label_count=label_count)
-        self.__inceptionset.target_transform = OneHotEncoder(label_count=label_count)
+        # self.__inceptionset.target_transform = OneHotEncoder(label_count=label_count)
             
         self.__logger.debug(f'data transform')
         
@@ -80,7 +80,10 @@ class CGANDataPreprocessor:
 
     def get_data_loader(self):
         trainloader = torch.utils.data.DataLoader(self.__trainset, self.batch_size, shuffle=True, num_workers=self.num_worker, pin_memory=True)
-        inceptionloader = torch.utils.data.DataLoader(self.__inceptionset, self.batch_size * 2, pin_memory=True, num_workers=0)
+        
+        # inception_sorted = sorted([(img, label) for img, label in self.__inceptionset], key=lambda x: x[1])
+        # inceptionloader = torch.utils.data.DataLoader(inception_sorted, self.batch_size * 2, pin_memory=True, num_workers=0, shuffle=False)
+        inceptionloader = self.__inceptionset
         
         self.trainloader = trainloader
         self.inceptionloader = inceptionloader

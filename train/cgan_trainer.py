@@ -106,11 +106,11 @@ class CGANTrainer(Trainer):
     #     self.optimizer_d.load_state_dict(saved_state['optimizer_d'])   
     
     
-    def compute_gradient_penalty(self, real_data, fake_data):
+    def compute_gradient_penalty(self, real_data, fake_data, labels_data):
         alpha = torch.rand(real_data.size(0), 1, 1, 1, device=self.device)
         interpolates = (alpha * real_data + ((1 - alpha) * fake_data)).requires_grad_(True)
     
-        d_interpolates = self.model_d(interpolates)
+        d_interpolates = self.model_d(interpolates, labels_data)
         
         gradients = torch.autograd.grad(
             outputs=d_interpolates,
@@ -175,27 +175,27 @@ class CGANTrainer(Trainer):
                 label = torch.full((b_size,), label_real, dtype=torch.float32, device=self.device)
                 real_data = 0.9 * real_data + 0.1 * torch.randn((real_data.size()), device=self.device)
                 
-                output = self.model_d(real_data, labels_data.detach()).view(-1)
-                real_error_d = self.criterion(output, label)
-                real_error_d.backward()
-                x_d = output.mean().item()
+                output_d1 = self.model_d(real_data, labels_data.detach()).view(-1)
+                real_error_d = self.criterion(output_d1, label)
+                # real_error_d.backward()
+                x_d = output_d1.mean().item()
                 
                 
                 noise = torch.randn(b_size, 100, 1, 1, device=self.device)
                 fake = self.model_g(noise, labels_data.detach())
-                label.fill_(label_fake)
+                label = torch.full((b_size,), label_fake, dtype=torch.float32, device=self.device)
                 fake = 0.9 * fake + 0.1 * torch.randn((fake.size()), device=self.device)
                 
-                output = self.model_d(fake.detach(), labels_data.detach()).view(-1)
-                fake_error_d = self.criterion(output, label)
-                fake_error_d.backward()
-                z1_gd = output.mean().item()
+                output_d2 = self.model_d(fake.detach(), labels_data.detach()).view(-1)
+                fake_error_d = self.criterion(output_d2, label)
+                # fake_error_d.backward()
+                z1_gd = output_d2.mean().item()
 
                 
-                # gradient_penalty = self.compute_gradient_penalty(real_label_concat, fake_label_concat)
-                # error_d = real_error_d + fake_error_d + self.lambda_gp * gradient_penalty
-                error_d = real_error_d + fake_error_d
-                # gradient_penalty.backward()
+                gradient_penalty = self.compute_gradient_penalty(real_data.detach(), fake.detach(), labels_data.detach())
+                error_d = real_error_d.mean() + fake_error_d.mean() + self.lambda_gp * gradient_penalty
+                # error_d = real_error_d + fake_error_d
+                error_d.backward()
                 self.optimizer_d.step()
 
                 self.model_g.zero_grad()
@@ -225,8 +225,8 @@ class CGANTrainer(Trainer):
                     generated_fake = (generated_fake - inception_mean) / inception_std
                     # fake = torch.utils.data.TensorDataset(fake)
                     
-                    inception_score = self.metric.inception_score(torch.utils.data.DataLoader(generated_fake, batch_size=128))
-                    fid = self.metric.fid(torch.utils.data.DataLoader(generated_fake, batch_size=128))
+                    inception_score = self.metric.inception_score(torch.utils.data.DataLoader(generated_fake, batch_size=128, shuffle=False))
+                    fid = self.metric.fid(torch.utils.data.DataLoader(generated_fake, batch_size=128, shuffle=False))
                     intra_fid = self.metric.intra_fid(generated_fake)
                     
                     self.logger.debug(f'inception score: {inception_score}\tfid: {fid}\tintra fid: {intra_fid}')
