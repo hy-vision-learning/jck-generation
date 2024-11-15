@@ -133,7 +133,9 @@ class Metrics:
         split_scores = 0
         for sidx in range(20):
             fid_score = self.fid(
-                torch.utils.data.DataLoader(generated_images[self.fake_superclass_idx[sidx]], 128, pin_memory=True, num_workers=0, shuffle=False),
+                torch.utils.data.DataLoader(
+                    generated_images[self.fake_superclass_idx[sidx]],
+                    128, pin_memory=True, num_workers=0, shuffle=False),
                 intra_fid=True, label=sidx)
             split_scores += fid_score
         return split_scores / 100
