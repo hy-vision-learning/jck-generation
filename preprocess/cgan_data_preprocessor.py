@@ -30,6 +30,10 @@ class CGANDataPreprocessor:
         
         self.__logger.debug('data preprocessor init')
         
+        self.idx_to_labels = dict()
+        for k, v in self.__trainset.class_to_idx.items():
+            self.idx_to_labels[v] = k
+        
     def __data_mean_std(self):
         data = torchvision.datasets.CIFAR100("./data", train=True, download=True)
         x = np.concatenate([np.asarray(data[i][0]) for i in range(len(data))])
@@ -55,7 +59,7 @@ class CGANDataPreprocessor:
             tt.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
         
         label_count = len(self.__trainset.classes)
-        self.__trainset.target_transform = OneHotEncoder(label_count=label_count)
+        # self.__trainset.target_transform = OneHotEncoder(label_count=label_count)
         # self.__inceptionset.target_transform = OneHotEncoder(label_count=label_count)
             
         self.__logger.debug(f'data transform')

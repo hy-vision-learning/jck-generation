@@ -49,8 +49,8 @@ class CGANTrainer(Trainer):
         self.lambda_gp = 10.0
         
         with torch.no_grad():
-            self.logger.debug(f"Generator:\n{summary(self.model_g, input_size=[(1, 100, 1, 1), (1, 100)], dtypes=[torch.float, torch.long])}")
-            self.logger.debug(f"Discriminator: {summary(self.model_d, input_size=[(1, 3, 64, 64), (1, 100)], dtypes=[torch.float, torch.long])}")
+            self.logger.debug(f"Generator:\n{summary(self.model_g, input_size=[(1, 100), (1,)], dtypes=[torch.float, torch.long])}")
+            self.logger.debug(f"Discriminator: {summary(self.model_d, input_size=[(1, 3, 64, 64), (1,)], dtypes=[torch.float, torch.long])}")
         self.model_g.apply(weights_init)
         self.model_d.apply(weights_init)
 
@@ -86,16 +86,31 @@ class CGANTrainer(Trainer):
             'optimizer_d': self.optimizer_d.state_dict()
         }, os.path.join(save_path, f'{iters}_{inception_score:.04f}_{fid:.04f}_{intra_fid:.04f}.pt'))
         
-        self.save_image(save_path, iters, images)
+        self.save_image(save_path, iters, images.detach().cpu())
         
         # self.logger.debug(f'{iters} model save')
         
     def save_image(self, path, iters, images):
         plt.clf()
-        plt.axis("off")
-        plt.title("fake images")
-        plt.imshow(np.transpose(vutils.make_grid(images, padding=2, normalize=True, nrow=10),(1,2,0)))
+        fig = plt.figure(figsize=(10, 10))
+        
+        # self.logger.debug(images[0])
+        # mean = torch.tensor([0.5, 0.5, 0.5]).view(1, 3, 1, 1)
+        # std = torch.tensor([0.5, 0.5, 0.5]).view(1, 3, 1, 1)
+        # images = (images * std + mean) * 255
+        # self.logger.debug(images[0])
+        
+        for i in range(100):
+            fig.add_subplot(10, 10, i + 1)
+            plt.title(self.data_pre.idx_to_labels[i])
+            plt.axis('off')
+            # self.logger.debug(f'{images[i]}, {images[i].shape}')
+            plt.imshow(np.transpose(images[i].numpy(), (1,2,0)))
+        # plt.axis("off")
+        # plt.title("fake images")
+        # plt.imshow(np.transpose(vutils.make_grid(images, padding=2, normalize=True, nrow=10),(1,2,0)))
         plt.savefig(os.path.join(path, f'{iters}_fake_image.png'))
+        plt.close()
         
     
     # def load_model(self, typ):
@@ -139,13 +154,12 @@ class CGANTrainer(Trainer):
         fixed_noise = []
         fixed_labels = []
         for i in range(100):
-            noise = torch.randn(10, 100, 1, 1, device=self.device)
-            labels_data = torch.LongTensor([1 if i == j else 0 for j in range(100)]).repeat(10, 1).to(self.device)
+            noise = torch.randn(10, 100, device=self.device)
             
             fixed_noise.append(noise)
-            fixed_labels.append(labels_data)
-        fixed_noise = torch.vstack(fixed_noise)
-        fixed_labels = torch.vstack(fixed_labels)
+            fixed_labels.extend([i] * 10)
+        fixed_noise = torch.vstack(fixed_noise).to(self.device)
+        fixed_labels = torch.LongTensor(fixed_labels).to(self.device)
         
         low_fid = low_intra_fid = 1e10
         high_is = 0
@@ -155,6 +169,7 @@ class CGANTrainer(Trainer):
         plt.title("real images")
         plt.imshow(np.transpose(vutils.make_grid(real_batch[0].to(self.device)[:64], padding=5, normalize=True).cpu(),(1,2,0)))
         plt.savefig(os.path.join(self.model_save_path, 'real_image.png'))
+        plt.close()
         
         image_save_path = os.path.join(self.model_save_path, 'img')
         if not os.path.exists(image_save_path):
@@ -181,7 +196,7 @@ class CGANTrainer(Trainer):
                 x_d = output_d1.mean().item()
                 
                 
-                noise = torch.randn(b_size, 100, 1, 1, device=self.device)
+                noise = torch.randn(b_size, 100, device=self.device)
                 fake = self.model_g(noise, labels_data.detach())
                 label = torch.full((b_size,), label_fake, dtype=torch.float32, device=self.device)
                 fake = 0.9 * fake + 0.1 * torch.randn((fake.size()), device=self.device)
@@ -218,8 +233,10 @@ class CGANTrainer(Trainer):
                     with torch.no_grad():
                         generated_fake = self.model_g(fixed_noise, fixed_labels).detach().cpu()
                     
-                    generated_fake = 0.5 * generated_fake + 0.5
-                    generated_fake = F.resize(generated_fake, [299, 299])
+                    generated_fake_denormal = 0.5 * generated_fake + 0.5
+                    # generated_fake_denormal = generated_fake_denormal * 255
+                    
+                    generated_fake = F.resize(generated_fake_denormal, [299, 299])
                     inception_mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
                     inception_std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
                     generated_fake = (generated_fake - inception_mean) / inception_std
@@ -234,17 +251,17 @@ class CGANTrainer(Trainer):
                     if low_fid > fid:
                         low_fid = fid
                         self.logger.debug(f"{iters} lowest fid")
-                        self.save_model('fid', iters, inception_score, fid, intra_fid, generated_fake[::10])
+                        self.save_model('fid', iters, inception_score, fid, intra_fid, generated_fake_denormal[::10])
                     if low_intra_fid > intra_fid:
                         low_intra_fid = intra_fid
                         self.logger.debug(f"{iters} lowest intra fid")
-                        self.save_model('intra_fid', iters, inception_score, fid, intra_fid, generated_fake[::10])
+                        self.save_model('intra_fid', iters, inception_score, fid, intra_fid, generated_fake_denormal[::10])
                     if high_is < inception_score:
                         high_is = inception_score
                         self.logger.debug(f"{iters} highest is")
-                        self.save_model('is', iters, inception_score, fid, intra_fid, generated_fake[::10])
+                        self.save_model('is', iters, inception_score, fid, intra_fid, generated_fake_denormal[::10])
                         
-                    self.save_image(image_save_path, iters, generated_fake[::10])
+                    self.save_image(image_save_path, iters, generated_fake_denormal[::10].detach().cpu())
                     
                 iters += 1
 
