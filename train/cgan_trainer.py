@@ -92,10 +92,15 @@ class CGANTrainer(Trainer):
         
     def save_image(self, path, iters, images):
         plt.clf()
-        plt.axis("off")
-        plt.title("fake images")
-        plt.imshow(np.transpose(vutils.make_grid(images, padding=2, normalize=True, nrow=10),(1,2,0)))
+        fig = plt.figure(figsize=(10, 10))
+        
+        for i in range(100):
+            fig.add_subplot(10, 10, i + 1)
+            plt.title(self.data_pre.idx_to_labels[i])
+            plt.axis('off')
+            plt.imshow(np.transpose(images[i].numpy(), (1,2,0)))
         plt.savefig(os.path.join(path, f'{iters}_fake_image.png'))
+        plt.close()
         
     
     # def load_model(self, typ):
@@ -218,8 +223,8 @@ class CGANTrainer(Trainer):
                     with torch.no_grad():
                         generated_fake = self.model_g(fixed_noise, fixed_labels).detach().cpu()
                     
-                    generated_fake = 0.5 * generated_fake + 0.5
-                    generated_fake = F.resize(generated_fake, [299, 299])
+                    generated_fake_denormal = 0.5 * generated_fake + 0.5
+                    generated_fake = F.resize(generated_fake_denormal, [299, 299])
                     inception_mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
                     inception_std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
                     generated_fake = (generated_fake - inception_mean) / inception_std
@@ -234,17 +239,17 @@ class CGANTrainer(Trainer):
                     if low_fid > fid:
                         low_fid = fid
                         self.logger.debug(f"{iters} lowest fid")
-                        self.save_model('fid', iters, inception_score, fid, intra_fid, generated_fake[::10])
+                        self.save_model('fid', iters, inception_score, fid, intra_fid, generated_fake_denormal[::10])
                     if low_intra_fid > intra_fid:
                         low_intra_fid = intra_fid
                         self.logger.debug(f"{iters} lowest intra fid")
-                        self.save_model('intra_fid', iters, inception_score, fid, intra_fid, generated_fake[::10])
+                        self.save_model('intra_fid', iters, inception_score, fid, intra_fid, generated_fake_denormal[::10])
                     if high_is < inception_score:
                         high_is = inception_score
                         self.logger.debug(f"{iters} highest is")
-                        self.save_model('is', iters, inception_score, fid, intra_fid, generated_fake[::10])
+                        self.save_model('is', iters, inception_score, fid, intra_fid, generated_fake_denormal[::10])
                         
-                    self.save_image(image_save_path, iters, generated_fake[::10])
+                    self.save_image(image_save_path, iters, generated_fake_denormal[::10])
                     
                 iters += 1
 

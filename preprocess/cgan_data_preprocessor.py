@@ -28,6 +28,10 @@ class CGANDataPreprocessor:
         self.__trainset = torchvision.datasets.CIFAR100("./data", train=True, download=True, transform=None)
         self.__inceptionset = torchvision.datasets.CIFAR100("./data", train=True, download=True, transform=None)
         
+        self.idx_to_labels = dict()
+        for k, v in self.__trainset.class_to_idx.items():
+            self.idx_to_labels[v] = k
+        
         self.__logger.debug('data preprocessor init')
         
     def __data_mean_std(self):
