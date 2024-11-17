@@ -6,7 +6,8 @@ from torchvision import datasets, transforms, models
 from torch.utils.data import DataLoader
 
 import preprocess.cgan_data_preprocessor
-from train import dcgan_trainer, cgan_trainer
+import preprocess.ddim_preprocessor
+import train
 from model import DCGAN, CGAN
 import preprocess
 
@@ -24,6 +25,7 @@ from change_randomseed import RANDOMSEED
 
 from logger.main_logger import MainLogger
 from enums import ModelEnum
+import train.ddim_trainer
 
 torch.autograd.set_detect_anomaly(True)
 
@@ -82,14 +84,19 @@ def main(args: argparse.Namespace):
         
         model_g = DCGAN.Generator()
         model_d = DCGAN.Discriminator()
-        trainer = dcgan_trainer.DCGANTrainer(args, model_g, model_d, data_pre)
+        trainer = train.dcgan_trainer.DCGANTrainer(args, model_g, model_d, data_pre)
     elif args.model == ModelEnum.CGAN:
         data_pre = preprocess.cgan_data_preprocessor.CGANDataPreprocessor(args)
         data_pre.transform_data()
         
         model_g = CGAN.Generator()
         model_d = CGAN.Discriminator()
-        trainer = cgan_trainer.CGANTrainer(args, model_g, model_d, data_pre)
+        trainer = train.cgan_trainer.CGANTrainer(args, model_g, model_d, data_pre)
+    elif args.model == ModelEnum.DDIM:
+        data_pre = preprocess.ddim_preprocessor.DDIMDataPreprocessor(args)
+        data_pre.transform_data()
+        
+        trainer = train.ddim_trainer.DDIMTrainer(args, data_pre)
     
     # model = QsingBertModel()
     # trainer = Trainer(args, model, data_prep)
