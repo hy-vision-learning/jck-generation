@@ -131,13 +131,11 @@ def main(args: argparse.Namespace):
         model_g = CGAN.Generator()
         model_d = CGAN.Discriminator()
         trainer = train.cgan_trainer.CGANTrainer(args, model_g, model_d, data_pre)
-    elif args.model == ModelEnum.DDIM:
-        data_pre = preprocess.ddim_preprocessor.DDIMDataPreprocessor(args)
-        data_pre.transform_data()
-        
-        trainer = train.ddim_trainer.DDIMTrainer(args, data_pre)
     elif args.model == ModelEnum.DDPM:
         train.ddpm_trainer.train(args)
+    elif args.model == ModelEnum.DDIM:
+        trainer = train.ddim_trainer.DDIMTrainer(args)
+        trainer.train()
     
     # model = QsingBertModel()
     # trainer = Trainer(args, model, data_prep)

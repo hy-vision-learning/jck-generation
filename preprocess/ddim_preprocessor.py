@@ -13,7 +13,7 @@ class DDIMDataPreprocessor:
         self.__logger = MainLogger(args)
         
         self.batch_size = args.batch_size
-        self.num_worker = args.num_worker
+        self.num_worker = args.num_workers
         
         self.data_mean, self.data_std = self.__data_mean_std()
         
