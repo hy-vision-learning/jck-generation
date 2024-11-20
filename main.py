@@ -56,7 +56,7 @@ def get_arg_parse():
     # parser.add_argument('-e', '--epoch', type=int, help='epoch', default=100)
     # parser.add_argument('-mlr', '--max_learning_rate', type=float, help='optimizer max learning rate 설정', default=0.1)
     # parser.add_argument('-milr', '--min_learning_rate', type=float, help='optimizer min learning rate 설정', default=1e-4)
-    # parser.add_argument('-wd', '--weight_decay', type=float, help='optimizer weight decay 설정', default=5e-4)
+    parser.add_argument('-wd', '--weight_decay', type=float, help='optimizer weight decay 설정', default=0.0)
     # parser.add_argument('-snt', '--nesterov', type=int, help="nesterov sgd 사용 여부", default=1)
     
     # Unet
@@ -75,7 +75,7 @@ def get_arg_parse():
 
     # Training
     parser.add_argument('--lr', type=float, help='target learning rate', default=2e-4)
-    parser.add_argument('--grad_clip', type=float, help="gradient norm clipping", default=1.0)
+    parser.add_argument('--grad_clip', type=float, help="gradient norm clipping", default=-1.0)
     parser.add_argument('--total_steps', type=int, help='total training steps', default=800000)
     parser.add_argument('--img_size', type=int, help='image size', default=32)
     parser.add_argument('--warmup', type=int, help='learning rate warmup', default=5000)
@@ -88,11 +88,13 @@ def get_arg_parse():
     # parser.add_argument('--logdir', type=str, help='log directory', default='./logs/DDPM_CIFAR10_EPS')
     parser.add_argument('--sample_size', type=int, help="sampling size of images", default=64)
     parser.add_argument('--sample_step', type=int, help='frequency of sampling', default=1000)
+    parser.add_argument('--eta', type=float, help='sampler eta', default=0.0)
 
     # Evaluation
     parser.add_argument('--save_step', type=int, help='frequency of saving checkpoints, 0 to disable during training', default=5000)
     parser.add_argument('--eval_step', type=int, help='frequency of evaluating model, 0 to disable during training', default=0)
     parser.add_argument('--num_images', type=int, help='the number of generated images for evaluation', default=50000)
+    parser.add_argument('--eval_sample_step', type=int, help='frequency of sampling', default=500)
     # parser.add_argument('--fid_use_torch', type=bool, help='calculate IS and FID on gpu', default=False)
     # parser.add_argument('--fid_cache', type=str, help='FID cache', default='./stats/cifar10.train.npz')
 

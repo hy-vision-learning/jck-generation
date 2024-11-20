@@ -7,7 +7,7 @@ import torchvision.transforms.functional as TF
 from torchvision.utils import make_grid, save_image
 
 from model.DDIM.unet import UNet
-from model.DDIM.diffusion import GaussianDiffusionTrainer, DDIMSampler
+from model.DDIM.diffusion import DDIMForwardTrainer, DDIMSampler, EMAHelper
 
 from metrics import Metrics
 from logger.main_logger import MainLogger
@@ -26,51 +26,9 @@ class DDIMTrainer:
         self.args = args
         self.device = get_default_device()
         self.logger = MainLogger(self.args)
+        
     
-    def ema(self, source, target, decay):
-        source_dict = source.state_dict()
-        target_dict = target.state_dict()
-        for key in source_dict.keys():
-            target_dict[key].data.copy_(
-                target_dict[key].data * decay +
-                source_dict[key].data * (1 - decay))
-
-
-    def infiniteloop(self, dataloader):
-        while True:
-            for x, y in iter(dataloader):
-                yield x, y
-                
-    def evaluate(self, args, sampler, model, device, metric: Metrics):
-        model.eval()
-        with torch.no_grad():
-            images = []
-            desc = "generating images"
-            for i in trange(0, args.num_images, args.batch_size, desc=desc):
-                batch_size = min(args.batch_size, args.num_images - i)
-                x_T = torch.randn((batch_size, 3, args.img_size, args.img_size), device=device)
-                batch_images = sampler(x_T.to(device))
-                images.append((batch_images + 1) / 2)
-            images = torch.cat(images, dim=0)
-        model.train()
-        
-        # print(images[0])
-        
-        # images = 0.5 * images + 0.5
-        images = TF.resize(images, [299, 299]).to(device)
-        inception_mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1).to(device)
-        inception_std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1).to(device)
-        images = (images - inception_mean) / inception_std
-        
-        inception_score = metric.inception_score(torch.utils.data.DataLoader(images, batch_size=64))
-        fid = metric.fid(torch.utils.data.DataLoader(images, batch_size=64))
-        
-        # (IS, IS_std), FID = get_inception_and_fid_score(
-        #     images, FLAGS.fid_cache, num_images=FLAGS.num_images,
-        #     use_torch=FLAGS.fid_use_torch, verbose=True)
-        return inception_score, fid, images
-    
-    def train(self):
+    def __load_data(self):
         dataset = CIFAR100("./data", train=True, download=True, 
             transform=transforms.Compose([
                 transforms.RandomHorizontalFlip(),
@@ -80,101 +38,133 @@ class DDIMTrainer:
         )
         loader = DataLoader(dataset, batch_size=self.args.batch_size,
                             num_workers=self.args.num_workers, shuffle=True, pin_memory=True)
-        datalooper = self.infiniteloop(loader)
-        start_epoch = 1
-        
-        metric = Metrics(dataset)
-
-        model = UNet().to(self.device)
-        ema_model = copy.deepcopy(model).to(self.device)
-        optimizer = torch.optim.AdamW(model.parameters(), lr=self.args.lr, weight_decay=1e-4)
-        trainer = GaussianDiffusionTrainer(model, (self.args.beta_1, self.args.beta_T), self.args.T).to(self.device)
-        sampler = DDIMSampler(model, (self.args.beta_1, self.args.beta_T), self.args.T).to(self.device)
-        ema_sampler = DDIMSampler(ema_model, (self.args.beta_1, self.args.beta_T), self.args.T).to(self.device)
-        
-        os.makedirs(os.path.join(self.args.save_path, 'sample'))
-        x_T = torch.randn(self.args.sample_size, 3, self.args.img_size, self.args.img_size)
-        x_T = x_T.to(self.device)
-        grid = (make_grid(next(iter(loader))[0][:self.args.sample_size]) + 1) / 2
-        
-        sample_step = self.args.sample_step
-        save_step = self.args.save_step
-        eval_step = self.args.eval_step
-        
-        start = time.time()
-        step_start = time.time()
-
-        for epoch in range(start_epoch, self.args.total_steps + 1):
-            total_loss, total_num = 0., 0
-            for images, _ in loader:
-                optimizer.zero_grad()
-                x_0 = images.to(self.device)
-
-                loss = trainer(x_0)
-                loss.backward()
-                optimizer.step()
-                
-                self.ema(model, ema_model, self.args.ema_decay)
-                
-                total_loss += loss.item()
-                total_num += x_0.shape[0]
-            loss = total_loss / total_num
-            
-            self.logger.debug("%d/%d " % (epoch, self.args.total_steps) +
-                f"loss: {loss:.4f}\ttime: {time_to_str(time.time() - step_start)}")
-            step_start = time.time()
-            
-            # sample
-            if sample_step > 0 and epoch % sample_step == 0:
-                model.eval()
-                with torch.no_grad():
-                    x_0 = ema_sampler(x_T)
-                    grid = (make_grid(x_0) + 1) / 2
-                    path = os.path.join(self.args.save_path, 'sample', '%d.png' % epoch)
-                    save_image(grid, path)
-                    # writer.add_image('sample', grid, step)
-                model.train()
-
-            # save
-            if save_step > 0 and epoch % save_step == 0:
-                ckpt = {
-                    'net_model': model.state_dict(),
-                    'ema_model': ema_model.state_dict(),
-                    # 'sched': sched.state_dict(),
-                    'optim': optimizer.state_dict(),
-                    'step': epoch,
-                    'x_T': x_T,
-                }
-                torch.save(ckpt, os.path.join(self.args.save_path, 'ckpt.pt'))
-
-            # evaluate
-            if eval_step > 0 and epoch % eval_step == 0:
-                net_IS, net_FID, _ = self.evaluate(self.args, sampler, model, self.device, metric)
-                ema_IS, ema_FID, _ = self.evaluate(self.args, ema_sampler, ema_model, self.device, metric)
-                metrics = {
-                    'IS': net_IS.item(),
-                    'FID': net_FID.item(),
-                    'IS_EMA': ema_IS.item(),
-                    'FID_EMA': ema_FID.item()
-                }
-                self.logger.debug(", ".join('%s:%.3f' % (k, v) for k, v in metrics.items()))
-                # for name, value in metrics.items():
-                #     writer.add_scalar(name, value, step)
-                # writer.flush()
-                with open(os.path.join(self.args.save_path, 'eval.txt'), 'a') as f:
-                    metrics['step'] = epoch
-                    f.write(json.dumps(metrics) + "\n")
-        
-        self.logger.debug(f"training time: {time_to_str(time.time() - start)}")
-
-            # total_loss += loss.item()
-            # total_num += x_0.shape[0]
-
-            # data.set_description(f"Epoch: {epoch}")
-            # data.set_postfix(ordered_dict={
-            #     "train_loss": total_loss / total_num,
-            # })
-            # model_checkpoint.step(loss, model=model.state_dict(), config=config,
-            #                     optimizer=optimizer.state_dict(), start_epoch=epoch,
-            #                     model_checkpoint=model_checkpoint.state_dict())
+        # datalooper = self.infiniteloop(loader)
+        return dataset, loader
     
+    
+    def __save_model(self, typ, epoch, model_name, model, model_ema, optimizer):
+        save_path = os.path.join(self.args.save_path, typ)
+        if not os.path.exists(save_path):
+            os.makedirs(save_path)
+        
+        for filename in os.listdir(save_path):
+            file_path = os.path.join(save_path, filename)
+            if os.path.isfile(file_path) and filename.endswith('.pt'):
+                os.remove(file_path)
+        
+        torch.save({
+            'epoch': epoch,
+            'model': model.state_dict(),
+            'model_ema': model_ema.state_dict(),
+            'optimizer': optimizer.state_dict()
+        }, os.path.join(save_path, model_name))
+        
+    
+    def __evaluate(self, metric, images):
+        result = TF.resize(images, [299, 299])
+        inception_mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
+        inception_std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
+        result = (result - inception_mean) / inception_std
+        
+        inception_score = metric.inception_score(torch.utils.data.DataLoader(result, batch_size=64))
+        fid = metric.fid(torch.utils.data.DataLoader(result, batch_size=64))
+        return inception_score, fid
+    
+    
+    def train(self):
+        dataset, datalooper = self.__load_data()
+        metric = Metrics(dataset)
+        
+        unet_model = UNet(dropout=self.args.dropout).to(self.device)
+        forward_trainer = DDIMForwardTrainer(unet_model, self.args.beta_1, self.args.beta_T, self.args.T).to(self.device)
+        
+        ema_helper = EMAHelper(mu=0.999, device=self.device)
+        ema_helper.register(unet_model)
+        ema_model = ema_helper.ema_copy(unet_model)
+        
+        sampler = DDIMSampler(ema_model, self.args.beta_1, self.args.beta_T, self.args.T).to(self.device)
+        
+        optimizer = torch.optim.Adam(unet_model.parameters(), lr=self.args.lr, 
+                                      weight_decay=self.args.weight_decay, betas=(0.9, 0.999))
+        
+        start_epoch = step = 0
+        start_time = time.time()
+        
+        fixed_noise = torch.randn((self.args.sample_size, 3, 32, 32))
+        fixed_noise_loader = DataLoader(fixed_noise, batch_size=self.args.batch_size * 2,
+                            num_workers=0, pin_memory=True)
+        
+        highest_is = 0
+        lowest_fid = 1e10
+        
+        for epoch in range(start_epoch, self.args.total_steps + 1):
+            step_time = time.time()
+            epoch_loss = 0
+            for i, (images, _) in enumerate(datalooper):
+                x_0 = images.to(self.device)
+                
+                loss = forward_trainer(x_0)
+                
+                optimizer.zero_grad()
+                loss.backward()
+                
+                epoch_loss += loss.item()
+                if i % 50 == 0 or i == len(datalooper) - 1:
+                    self.logger.debug(
+                        f"epoch: {epoch}\tstep: {i}\tloss: {loss.item():.4f}"
+                    )   
+                
+                if self.args.grad_clip != -1:
+                    torch.nn.utils.clip_grad_norm_(unet_model.parameters(), self.args.grad_clip)
+                
+                optimizer.step()
+                ema_helper.update(unet_model)
+                
+            if epoch % self.args.eval_step == 0 or epoch == self.args.total_steps - 1:
+                ema_helper.ema(ema_model)
+                with torch.no_grad():
+                    generated_images = []
+                    for fixed_noise in tqdm(fixed_noise_loader, desc="Generating images"):
+                        fixed_noise = fixed_noise.to(self.device)
+                        generated_image = sampler(fixed_noise, steps=self.args.eval_sample_step, method="linear", eta=0.0, only_return_x_0=True)
+                        generated_images.append(generated_image.cpu())
+                    generated_images = torch.cat(generated_images, dim=0)
+                generated_images = torch.clamp(generated_images, -1.0, 1.0)
+                
+                inception_score, fid = self.__evaluate(metric, generated_images)
+                self.logger.debug(f'IS: {inception_score:.4f}\tFID: {fid:.4f}')
+                
+                model_name = f'{epoch}_{inception_score:.04f}_{fid:.04f}.pt'
+                if inception_score > highest_is:
+                    highest_is = inception_score
+                    self.__save_model('is', epoch, model_name, unet_model, ema_model, optimizer)
+                    self.logger.debug(f'highest IS')
+                if fid < lowest_fid:
+                    lowest_fid = fid
+                    self.__save_model('fid', epoch, model_name, unet_model, ema_model, optimizer)
+                    self.logger.debug(f'lowest FID')
+                
+                grid = (make_grid(generated_images)[:64] + 1) / 2
+                path = os.path.join(self.args.save_path, 'sample')
+                if not os.path.exists(path):
+                    os.makedirs(path)
+                image_path = os.path.join(path, '%d.png' % epoch)
+                save_image(grid, image_path)
+                
+            self.__save_model('model', epoch, 'last.pt', unet_model, ema_model, optimizer)
+            self.logger.debug(f"Epoch {epoch}/{self.args.total_steps}" +
+                f"\ttime: {time_to_str(time.time() - step_time)}\tloss: {epoch_loss / len(datalooper):.4f}")
+        
+        self.logger.debug(f"training time: {time_to_str(time.time() - start_time)}")
+        
+        ema_helper.ema(ema_model)
+        with torch.no_grad():
+            generated_images = []
+            for fixed_noise in tqdm(fixed_noise_loader, desc="Generating images"):
+                fixed_noise = fixed_noise.to(self.device)
+                generated_image = sampler(fixed_noise, steps=self.args.eval_sample_step, method="linear", eta=0.0, only_return_x_0=True)
+                generated_images.append(generated_image.cpu())
+            generated_images = torch.cat(generated_images, dim=0)
+        generated_images = torch.clamp(generated_images, -1.0, 1.0)
+        inception_score, fid = self.__evaluate(metric, generated_images)
+        self.logger.debug(f'Final Results\tIS: {inception_score:.4f}\tFID: {fid:.4f}')
