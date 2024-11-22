@@ -8,20 +8,12 @@ from sklearn.model_selection import train_test_split
 from logger.main_logger import MainLogger
 
 
-class OneHotEncoder:
-    def __init__(self, label_count):
-        self.label_count = label_count
-    
-    def __call__(self, label):
-        return torch.LongTensor([1 if i == label else 0 for i in range(self.label_count)])
-
-
-class CGANDataPreprocessor:
+class DDIMDataPreprocessor:
     def __init__(self, args):
         self.__logger = MainLogger(args)
         
         self.batch_size = args.batch_size
-        self.num_worker = args.num_worker
+        self.num_worker = args.num_workers
         
         self.data_mean, self.data_std = self.__data_mean_std()
         
@@ -33,10 +25,6 @@ class CGANDataPreprocessor:
             self.idx_to_labels[v] = k
         
         self.__logger.debug('data preprocessor init')
-        
-        self.idx_to_labels = dict()
-        for k, v in self.__trainset.class_to_idx.items():
-            self.idx_to_labels[v] = k
         
     def __data_mean_std(self):
         data = torchvision.datasets.CIFAR100("./data", train=True, download=True)
@@ -52,19 +40,17 @@ class CGANDataPreprocessor:
     
     def transform_data(self):
         self.__trainset.transform = tt.Compose([
-            tt.Resize(64),
+            # tt.Resize(64),
             # tt.RandomCrop(32, padding=4, padding_mode='reflect'), 
             # tt.RandomHorizontalFlip(), 
+            tt.RandomHorizontalFlip(p=0.5),
             tt.ToTensor(),
-            tt.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], inplace=True)])
+            # tt.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], inplace=True)
+        ])
         self.__inceptionset.transform = tt.Compose([
             tt.Resize((299, 299)),
             tt.ToTensor(),
             tt.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
-        
-        label_count = len(self.__trainset.classes)
-        # self.__trainset.target_transform = OneHotEncoder(label_count=label_count)
-        # self.__inceptionset.target_transform = OneHotEncoder(label_count=label_count)
             
         self.__logger.debug(f'data transform')
         
@@ -88,9 +74,6 @@ class CGANDataPreprocessor:
 
     def get_data_loader(self):
         trainloader = torch.utils.data.DataLoader(self.__trainset, self.batch_size, shuffle=True, num_workers=self.num_worker, pin_memory=True)
-        
-        # inception_sorted = sorted([(img, label) for img, label in self.__inceptionset], key=lambda x: x[1])
-        # inceptionloader = torch.utils.data.DataLoader(inception_sorted, self.batch_size * 2, pin_memory=True, num_workers=0, shuffle=False)
         inceptionloader = self.__inceptionset
         
         self.trainloader = trainloader

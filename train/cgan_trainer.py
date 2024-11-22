@@ -234,6 +234,7 @@ class CGANTrainer(Trainer):
                         generated_fake = self.model_g(fixed_noise, fixed_labels).detach().cpu()
                     
                     generated_fake_denormal = 0.5 * generated_fake + 0.5
+
                     # generated_fake_denormal = generated_fake_denormal * 255
                     
                     generated_fake = F.resize(generated_fake_denormal, [299, 299])
@@ -261,7 +262,7 @@ class CGANTrainer(Trainer):
                         self.logger.debug(f"{iters} highest is")
                         self.save_model('is', iters, inception_score, fid, intra_fid, generated_fake_denormal[::10])
                         
-                    self.save_image(image_save_path, iters, generated_fake_denormal[::10].detach().cpu())
+                    self.save_image(image_save_path, iters, generated_fake_denormal[::10])
                     
                 iters += 1
 
