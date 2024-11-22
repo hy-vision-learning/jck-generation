@@ -71,6 +71,7 @@ def get_arg_parse():
     parser.add_argument('--beta_1', type=float, help='start beta value', default=1e-4)
     parser.add_argument('--beta_T', type=float, help='end beta value', default=0.02)
     parser.add_argument('--T', type=int, help='total diffusion steps', default=1000)
+    parser.add_argument('--method', type=str, choices=['linear', 'cosine'], help='beta time scheduler', default='linear')
     parser.add_argument('--mean_type', type=str, choices=['xprev', 'xstart', 'epsilon'], help='predict variable', default='epsilon')
     parser.add_argument('--var_type', type=str, choices=['fixedlarge', 'fixedsmall'], help='variance type', default='fixedlarge')
 

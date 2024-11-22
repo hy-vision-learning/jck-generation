@@ -120,7 +120,7 @@ class DDIMTrainer:
         datalooper = self.infiniteloop(dataloader)
         
         self.unet_model = UNet(dropout=self.args.dropout).to(self.device)
-        forward_trainer = DDIMForwardTrainer(self.unet_model, self.args.beta_1, self.args.beta_T, self.args.T).to(self.device)
+        forward_trainer = DDIMForwardTrainer(self.unet_model, self.args.beta_1, self.args.beta_T, self.args.T, self.args.method).to(self.device)
         
         self.ema_helper = EMAHelper(mu=0.999, device=self.device)
         self.ema_helper.register(self.unet_model)
@@ -173,7 +173,7 @@ class DDIMTrainer:
             
             if step % self.args.eval_step == 0 or step == self.args.total_steps - 1:
                 inception_score, fid = self.__evaluate(metric, fixed_noise_loader, file_name=f'{step}.png',
-                                                       steps=self.args.eval_sample_step, method="linear",
+                                                       steps=self.args.eval_sample_step, method=self.args.method,
                                                        eta=0.0, only_return_x_0=True)
                 
                 model_name = f'{step}_{inception_score:.04f}_{fid:.04f}.pt'
@@ -190,7 +190,7 @@ class DDIMTrainer:
         self.logger.debug(f"training time: {time_to_str(time.time() - start_time)}")
         
         inception_score, fid = self.__evaluate(metric, fixed_noise_loader, file_name=f'final.png',
-                                                       steps=self.args.sample_step, method="linear",
+                                                       steps=self.args.sample_step, method=self.args.method,
                                                        eta=0.0, only_return_x_0=True)
 
 
@@ -223,5 +223,5 @@ class DDIMTrainer:
                             num_workers=0, pin_memory=True)
         
         self.__evaluate(metric, fixed_noise_loader, file_name=f'sample.png',
-                            steps=self.args.sample_step, method="linear",
+                            steps=self.args.sample_step, method=self.args.method,
                             eta=0.0, only_return_x_0=True)
