@@ -17,6 +17,15 @@ def extract(v: torch.Tensor, t: torch.LongTensor, shape: Tuple[int, ...]) -> tor
     return out
 
 
+def cosine_beta_schedule(timesteps, s=0.008):
+    steps = timesteps + 1
+    x = torch.linspace(0, timesteps, steps)
+    alphas_cumprod = torch.cos(((x / timesteps) + s) / (1 + s) * torch.pi * 0.5) ** 2
+    alphas_cumprod = alphas_cumprod / alphas_cumprod[0]
+    betas = 1 - (alphas_cumprod[1:] / alphas_cumprod[:-1])
+    return torch.clip(betas, 0.0001, 0.9999)
+
+
 class DDIMForwardTrainer(nn.Module):
     def __init__(self, model: nn.Module, beta_1: float, beta_T: float, T: int):
         """
@@ -32,7 +41,8 @@ class DDIMForwardTrainer(nn.Module):
         self.T = T
 
         # 노이즈 스케줄 생성
-        self.register_buffer("beta_t", torch.linspace(beta_1, beta_T, T, dtype=torch.float32))
+        # self.register_buffer("beta_t", torch.linspace(beta_1, beta_T, T, dtype=torch.float32))
+        self.register_buffer("beta_t", cosine_beta_schedule(T))
         alpha_t = 1.0 - self.beta_t
         alpha_t_bar = torch.cumprod(alpha_t, dim=0)
 
@@ -69,8 +79,8 @@ class DDIMForwardTrainer(nn.Module):
         epsilon_theta = self.model(x_t, t)
 
         # MSE 손실 계산
-        # loss = F.mse_loss(epsilon_theta, epsilon, reduction="none")
-        loss = (epsilon - epsilon_theta).square().sum(dim=(1, 2, 3)).mean(dim=0)
+        loss = F.mse_loss(epsilon_theta, epsilon)
+        # loss = (epsilon - epsilon_theta).square().sum(dim=(1, 2, 3)).mean(dim=0)
         # loss = torch.sum(loss)
         return loss
 

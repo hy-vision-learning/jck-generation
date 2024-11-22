@@ -49,6 +49,7 @@ def get_arg_parse():
     parser.add_argument('-lf', '--log_file', type=int, help='로그 파일 출력 여부. 0=false, 1=true', default=1)
     
     parser.add_argument('-m', '--model', type=ModelEnum, help='학습 모델', choices=list(ModelEnum), default=ModelEnum.DCGAN)
+    # parser.add_argument('--load_model', type=str, help='로드할 모델', default=None)
     
     # parser.add_argument('-w', '--num_worker', type=int, help='DataLoader worker', default=0)
     # parser.add_argument('-b', '--batch_size', type=int, help='학습 배치사이즈', default=128)
@@ -89,6 +90,7 @@ def get_arg_parse():
     parser.add_argument('--sample_size', type=int, help="sampling size of images", default=64)
     parser.add_argument('--sample_step', type=int, help='frequency of sampling', default=1000)
     parser.add_argument('--eta', type=float, help='sampler eta', default=0.0)
+    parser.add_argument('--load_model', type=str, help='load pretrained model path', default=None)
 
     # Evaluation
     parser.add_argument('--save_step', type=int, help='frequency of saving checkpoints, 0 to disable during training', default=5000)
@@ -137,7 +139,10 @@ def main(args: argparse.Namespace):
         train.ddpm_trainer.train(args)
     elif args.model == ModelEnum.DDIM:
         trainer = train.ddim_trainer.DDIMTrainer(args)
-        trainer.train()
+        if args.test:
+            trainer.test()
+        else:
+            trainer.train()
     
     # model = QsingBertModel()
     # trainer = Trainer(args, model, data_prep)
