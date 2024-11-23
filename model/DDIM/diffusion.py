@@ -177,18 +177,14 @@ class DDIMSampler(nn.Module):
             # 샘플링 과정에서의 최종 alpha 값을 맞추기 위해 1을 더함
             time_steps = time_steps + 1
         elif method == "quadratic":
-            time_steps = (np.linspace(0, np.sqrt(self.T * 0.8), steps) ** 2).astype(np.int)
+            time_steps = (np.linspace(0, np.sqrt(self.T * 0.8), steps) ** 2).astype(np.int_)
             # 샘플링 과정에서의 최종 alpha 값을 맞추기 위해 1을 더함
             time_steps = time_steps + 1
         elif method == "cosine":
-            # cosine_beta_schedule 함수를 사용하여 알파 누적 곱 계산
-            alphas_cumprod = cosine_beta_schedule(self.T)
-            
-            # alphas_cumprod을 기반으로 타임스텝 시퀀스 생성
-            time_steps = (alphas_cumprod.numpy() * self.T).astype(int)
-            
-            # 타임스텝을 [0, T-1] 범위로 클리핑
-            time_steps = np.clip(time_steps, 0, self.T - 1)
+            time_steps = np.linspace(0, 1, steps)  # [0, 1] 범위에서 균등 분포
+            time_steps = (np.sin(time_steps * np.pi / 2) ** 2 * self.T).astype(np.int_)
+            time_steps = np.clip(time_steps, 0, self.T - 2)  # 범위를 [0, T-1]로 제한
+            time_steps = time_steps + 1
         
         # 이전 타임스텝 시퀀스 생성 (첫 번째는 0으로 설정)
         time_steps_prev = np.concatenate([[0], time_steps[:-1]])
