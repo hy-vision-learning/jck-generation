@@ -43,6 +43,22 @@ def norm_layer(channels):
     return nn.GroupNorm(32, channels)
 
 
+class SinusoidalPosEmb(nn.Module):
+    def __init__(self, dim, theta = 10000):
+        super().__init__()
+        self.dim = dim
+        self.theta = theta
+
+    def forward(self, x):
+        device = x.device
+        half_dim = self.dim // 2
+        emb = math.log(self.theta) / (half_dim - 1)
+        emb = torch.exp(torch.arange(half_dim, device=device) * -emb)
+        emb = x[:, None] * emb[None, :]
+        emb = torch.cat((emb.sin(), emb.cos()), dim=-1)
+        return emb
+
+
 class ResidualBlock(TimestepBlock):
     """
     타임스텝 임베딩을 통합한 잔차 블록.
@@ -186,10 +202,16 @@ class UNet(nn.Module):
         # 타임스텝 임베딩 레이어 설정
         time_embed_dim = model_channels * 4
         self.time_embed = nn.Sequential(
+            SinusoidalPosEmb(model_channels),
             nn.Linear(model_channels, time_embed_dim),
-            nn.SiLU(),
+            nn.GELU(),
             nn.Linear(time_embed_dim, time_embed_dim),
         )
+        # self.time_embed = nn.Sequential(
+        #     nn.Linear(model_channels, time_embed_dim),
+        #     nn.SiLU(),
+        #     nn.Linear(time_embed_dim, time_embed_dim),
+        # )
 
         # 다운샘플링 블록 초기화
         self.down_blocks = nn.ModuleList([
@@ -247,28 +269,28 @@ class UNet(nn.Module):
             nn.Conv2d(model_channels, out_channels, kernel_size=3, padding=1),
         )
         
-    def timestep_embedding(self, timesteps, dim, max_period=10000):
-        """
-        타임스텝을 고차원 임베딩 벡터로 변환합니다.
-        주기적 함수(사인 및 코사인)를 사용하여 타임스텝 정보를 인코딩합니다.
+    # def timestep_embedding(self, timesteps, dim, max_period=10000):
+    #     """
+    #     타임스텝을 고차원 임베딩 벡터로 변환합니다.
+    #     주기적 함수(사인 및 코사인)를 사용하여 타임스텝 정보를 인코딩합니다.
         
-        Args:
-            timesteps (torch.Tensor): 타임스텝 값.
-            dim (int): 임베딩 차원.
-            max_period (int): 주기 범위.
+    #     Args:
+    #         timesteps (torch.Tensor): 타임스텝 값.
+    #         dim (int): 임베딩 차원.
+    #         max_period (int): 주기 범위.
         
-        Returns:
-            torch.Tensor: 타임스텝 임베딩 벡터.
-        """
-        half = dim // 2
-        freqs = torch.exp(
-            -math.log(max_period) * torch.arange(start=0, end=half, dtype=torch.float32) / half
-        ).to(device=timesteps.device)
-        args = timesteps[:, None].float() * freqs[None]
-        embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
-        if dim % 2:
-            embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
-        return embedding
+    #     Returns:
+    #         torch.Tensor: 타임스텝 임베딩 벡터.
+    #     """
+    #     half = dim // 2
+    #     freqs = torch.exp(
+    #         -math.log(max_period) * torch.arange(start=0, end=half, dtype=torch.float32) / half
+    #     ).to(device=timesteps.device)
+    #     args = timesteps[:, None].float() * freqs[None]
+    #     embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
+    #     if dim % 2:
+    #         embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
+    #     return embedding
 
     def forward(self, x, timesteps):
         """
@@ -283,7 +305,8 @@ class UNet(nn.Module):
             torch.Tensor: 출력 이미지 텐서.
         """
         hs = []
-        emb = self.time_embed(self.timestep_embedding(timesteps, self.model_channels))
+        # emb = self.time_embed(self.timestep_embedding(timesteps, self.model_channels))
+        emb = self.time_embed(timesteps)
 
         h = x
         # 인코더 단계

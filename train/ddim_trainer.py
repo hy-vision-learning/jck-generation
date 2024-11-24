@@ -133,7 +133,7 @@ class DDIMTrainer:
         fixed_noise_origin = torch.randn((self.args.sample_size, 3, 32, 32))
         
         if self.args.load_model:
-            start_step, model_state, model_ema_state, optimizer_state, _ =  self.__load_model()
+            start_step, model_state, model_ema_state, optimizer_state, fixed_noise_origin =  self.__load_model()
             self.unet_model.load_state_dict(model_state)
             self.ema_model.load_state_dict(model_ema_state)
             optimizer.load_state_dict(optimizer_state)
@@ -210,7 +210,7 @@ class DDIMTrainer:
         fixed_noise = torch.randn((self.args.sample_size, 3, 32, 32))
         
         if self.args.load_model:
-            _, model_state, model_ema_state, optimizer_state, _ =  self.__load_model()
+            _, model_state, model_ema_state, optimizer_state, fixed_noise =  self.__load_model()
             self.unet_model.load_state_dict(model_state)
             self.ema_model.load_state_dict(model_ema_state)
             optimizer.load_state_dict(optimizer_state)
