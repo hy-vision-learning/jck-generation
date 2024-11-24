@@ -224,4 +224,4 @@ class DDIMTrainer:
         
         self.__evaluate(metric, fixed_noise_loader, file_name=f'sample.png',
                             steps=self.args.sample_step, method=self.args.method,
-                            eta=0.0, only_return_x_0=True)
+                            eta=self.args.eta, only_return_x_0=True)
