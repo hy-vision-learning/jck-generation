@@ -6,6 +6,7 @@ class ModelEnum(Enum):
     CGAN = 'CGAN'
     DDPM = 'DDPM'
     DDIM = 'DDIM'
+    BIGGAN = 'BIGGAN'
 
     def __str__(self):
         return self.value
