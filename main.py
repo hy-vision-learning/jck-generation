@@ -53,25 +53,15 @@ def get_arg_parse():
     
     parser.add_argument('--num_workers', type=int, help='DataLoader workers', default=4)
     
-    # 고정된 파라미터 설정
     args = parser.parse_args()
     
-    # 직접 파라미터 값 할당
-    args.shuffle = True
     args.batch_size = 50
-    args.num_G_accumulations = 1
-    args.num_D_accumulations = 1
     args.num_epochs = 500
     args.num_D_steps = 4
-    args.dataset = 'C100'
     args.G_ortho = 0.0
-    args.ema = True
-    args.use_ema = True
     args.ema_start = 1000
     args.test_every = 500
     args.save_every = 2000
-    args.num_best_copies = 5
-    args.num_save_copies = 2
     
     args.ema_decay = 0.999
     args.toggle_grads = True
@@ -79,22 +69,6 @@ def get_arg_parse():
     args.D_ortho = 0.0
     args.G_ortho = 0.0
     args.num_inception_images = 10000
-    
-    args.pin_memory = True
-    args.load_in_mem = False
-    args.use_multiepoch_sampler = False
-    args.shared_dim = 0
-    args.z_var = 1.0
-    args.seed = 0
-    args.skip_init = False
-    args.which_best = 'FID'
-    args.which_train_fn = 'GAN'
-    args.load_weights = ''
-    args.resume = False
-    args.logstyle = '%3.3e'
-    args.log_G_spectra = False
-    args.log_D_spectra = False
-    args.sv_log_interval = 10
     
     return args
 
@@ -144,10 +118,6 @@ def main(args: argparse.Namespace):
             trainer.test()
         else:
             trainer.run()
-    
-    # model = QsingBertModel()
-    # trainer = Trainer(args, model, data_prep)
-    # trainer.train()
 
 
 if __name__ == "__main__":

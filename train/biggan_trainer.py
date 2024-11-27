@@ -51,20 +51,17 @@ class EMA(object):
         self.source = source
         self.target = target
         self.decay = decay
-        # Optional parameter indicating what iteration to start the decay at
+        
         self.start_itr = start_itr
-        # Initialize target's params to be source's
+        
         self.source_dict = self.source.state_dict()
         self.target_dict = self.target.state_dict()
-        print('Initializing EMA parameters to be source parameters...')
+        
         with torch.no_grad():
             for key in self.source_dict:
                 self.target_dict[key].data.copy_(self.source_dict[key].data)
-            # target_dict[key].data = source_dict[key].data # Doesn't work!
 
     def update(self, itr=None):
-        # If an iteration counter is provided and itr is less than the start itr,
-        # peg the ema weights to the underlying weights.
         if itr and itr < self.start_itr:
             decay = 0.0
         else:
@@ -163,7 +160,7 @@ class BIGGANTrainer:
         return loss
     
     
-    def __save_model(self, typ, epoch, model_name, G, D, state_dict, G_ema):
+    def __save_model(self, typ, epoch, model_name, G, D, G_ema):
         save_path = os.path.join(self.args.save_path, typ)
         if not os.path.exists(save_path):
             os.makedirs(save_path)
@@ -180,18 +177,18 @@ class BIGGANTrainer:
             'optim_g': G.optim.state_dict(),
             'optim_d': D.optim.state_dict(),
             'model_ema': G_ema.state_dict(),
-            'state_dict': state_dict
+            'state_dict': self.state_dict
         }, os.path.join(save_path, model_name))
     
     
-    def train(self, x, y, G, D, GD, z_, y_, ema, state_dict):
+    def train(self, x, y, G, D, GD, z_, y_, ema):
         def toggle_grad(model, on_or_off):
             for param in model.parameters():
                 param.requires_grad = on_or_off
         
         G.optim.zero_grad()
         D.optim.zero_grad()
-        # How many chunks to split x and y into?
+        
         x = torch.split(x, self.args.batch_size)
         y = torch.split(y, self.args.batch_size)
         counter = 0
@@ -200,25 +197,19 @@ class BIGGANTrainer:
         toggle_grad(G, False)
         
         for step_index in range(self.args.num_D_steps):
-        # If accumulating gradients, loop multiple times before an optimizer step
             D.optim.zero_grad()
-            for accumulation_index in range(self.args.num_D_accumulations):
-                z_.sample_()
-                y_.sample_()
-                D_fake, D_real = GD(z_[:self.args.batch_size], y_[:self.args.batch_size], 
-                                    x[counter], y[counter], train_G=False)
-                
-                # Compute components of D's loss, average them, and divide by 
-                # the number of gradient accumulations
-                D_loss_real, D_loss_fake = self.loss_hinge_dis(D_fake, D_real)
-                D_loss = (D_loss_real + D_loss_fake) / float(self.args.num_D_accumulations)
-                D_loss.backward()
-                counter += 1
             
-            # Optionally apply ortho reg in D
+            z_.sample_()
+            y_.sample_()
+            D_fake, D_real = GD(z_[:self.args.batch_size], y_[:self.args.batch_size], 
+                                x[counter], y[counter], train_G=False)
+            
+            D_loss_real, D_loss_fake = self.loss_hinge_dis(D_fake, D_real)
+            D_loss = (D_loss_real + D_loss_fake)
+            D_loss.backward()
+            counter += 1
+            
             if self.args.D_ortho > 0.0:
-                # Debug print to indicate we're using ortho reg in D.
-                print('using modified ortho reg in D')
                 self.ortho(D, self.args.D_ortho)
         
             D.optim.step()
@@ -226,48 +217,33 @@ class BIGGANTrainer:
         toggle_grad(D, False)
         toggle_grad(G, True)
         
-        # Zero G's gradients by default before training G, for safety
         G.optim.zero_grad()
+          
+        z_.sample_()
+        y_.sample_()
+        D_fake = GD(z_, y_, train_G=True)
+        G_loss = self.loss_hinge_gen(D_fake)
+        G_loss.backward()
         
-        # If accumulating gradients, loop multiple times
-        for accumulation_index in range(self.args.num_G_accumulations):    
-            z_.sample_()
-            y_.sample_()
-            D_fake = GD(z_, y_, train_G=True)
-            G_loss = self.loss_hinge_gen(D_fake) / float(self.args.num_G_accumulations)
-            G_loss.backward()
-        
-        # Optionally apply modified ortho reg in G
         if self.args.G_ortho > 0.0:
-            print('using modified ortho reg in G') # Debug print to indicate we're using ortho reg in G
-            # Don't ortho reg shared, it makes no sense. Really we should blacklist any embeddings for this
             self.ortho(G, self.args.G_ortho, 
                         blacklist=[param for param in G.shared.parameters()])
         G.optim.step()
-            
-        # If we have an ema, update it, regardless of if we test with it or not
-        ema.update(state_dict['itr'])
         
-        out = {'G_loss': float(G_loss.item()), 
-                'D_loss_real': float(D_loss_real.item()),
-                'D_loss_fake': float(D_loss_fake.item())}
-        # Return G's loss and the components of D's loss.
-        return out
+        ema.update(self.state_dict['itr'])
+        
+        return float(G_loss.item()), float(D_loss_real.item()), float(D_loss_fake.item())
     
     
-    def test(self, G, D, G_ema, state_dict, sample, get_inception_metrics):
-        print('Gathering inception metrics...')
+    def test(self, G, D, G_ema, sample, get_inception_metrics):
         IS_mean, IS_std, FID, intra_FID = get_inception_metrics(sample, self.args.num_inception_images, num_splits=10)
-        # IS_mean, IS_std, FID = get_inception_metrics(sample, config['num_inception_images'], num_splits=10)
-        # print('Itr %d: PYTORCH UNOFFICIAL Inception Score is %3.3f +/- %3.3f, PYTORCH UNOFFICIAL FID is %5.4f' % (state_dict['itr'], IS_mean, IS_std, FID))
         
-        if ((self.args.which_best == 'IS' and IS_mean > state_dict['best_IS'])
-            or (self.args.which_best == 'FID' and FID < state_dict['best_FID'])):
-            print('%s improved over previous best, saving checkpoint...' % self.args.which_best)
-            self.__save_model('best', state_dict['epoch'], 'best.pt', G, D, state_dict, G_ema)
-            state_dict['save_best_num'] = (state_dict['save_best_num'] + 1 ) % self.args.num_best_copies
-        state_dict['best_IS'] = max(state_dict['best_IS'], IS_mean)
-        state_dict['best_FID'] = min(state_dict['best_FID'], FID)
+        if self.state_dict['best_IS'] < IS_mean:
+            self.state_dict['best_IS'] = IS_mean
+            self.__save_model('is', self.state_dict['itr'], 'best.pt', G, D, G_ema)
+        if self.state_dict['best_FID'] > FID:
+            self.state_dict['best_FID'] = IS_mean
+            self.__save_model('FID', self.state_dict['itr'], 'best.pt', G, D, G_ema)
         
         
     def save_and_sample(self, G, D, G_ema, z_, y_, fixed_z, fixed_y, state_dict):
@@ -305,10 +281,9 @@ class BIGGANTrainer:
         self.logger.debug('Number of params in G: {} D: {}'.format(
             *[sum([p.data.nelement() for p in net.parameters()]) for net in [G,D]]))
         
-        state_dict = {'itr': 0, 'epoch': 0, 'save_num': 0, 'save_best_num': 0,
-                        'best_IS': 0, 'best_FID': 999999}
+        self.state_dict = {'itr': 0, 'epoch': 0, 'best_IS': 0, 'best_FID': 999999}
         
-        D_batch_size = self.args.batch_size * self.args.num_D_steps * self.args.num_D_accumulations
+        D_batch_size = self.args.batch_size * self.args.num_D_steps
         loader = self.get_data_loader(batch_size=D_batch_size)
 
         z_, y_ = self.prepare_z_y(self.args.batch_size, G.dim_z, 100)
@@ -319,31 +294,27 @@ class BIGGANTrainer:
         
         sample = functools.partial(self.sample, G=G_ema, z_=z_, y_=y_)
 
-        print('Beginning training at epoch %d...' % state_dict['epoch'])
+        print('Beginning training at epoch %d...' % self.state_dict['epoch'])
         
-        for epoch in range(state_dict['epoch'], self.args.num_epochs):
+        for epoch in range(self.state_dict['epoch'], self.args.num_epochs):
             for i, (x, y) in enumerate(tqdm(loader, ncols=0)):
-                state_dict['itr'] += 1
+                self.state_dict['itr'] += 1
                 
                 G.train()
                 D.train()
                 G_ema.train()
                 
                 x, y = x.to(self.device), y.to(self.device)
-                metrics = self.train(x, y, G, D, GD, z_, y_, ema, state_dict)
-                # metrics = train(x, y)
+                G_loss, D_loss_real, D_loss_fake = self.train(x, y, G, D, GD, z_, y_, ema)
                 
-                if not (state_dict['itr'] % 100): 
-                    self.logger.debug(f'itr: {state_dict["itr"]}\t{"\t".join([f"{k}: {v:.4f}" for k, v in metrics.items()])}')
+                if not (self.state_dict['itr'] % 100): 
+                    self.logger.debug(f'itr: {self.state_dict["itr"]}\tG_loss: {G_loss:.4f}\t' + 
+                                      f'D_loss_real: {D_loss_real:.4f}\tD_loss_fake: {D_loss_fake:.4f}')
                 
-                if not (state_dict['itr'] % self.args.save_every):
-                    # G.eval()
-                    # G_ema.eval()
-                    self.save_and_sample(G, D, G_ema, z_, y_, fixed_z, fixed_y, state_dict)
+                if not (self.state_dict['itr'] % self.args.save_every):
+                    self.save_and_sample(G, D, G_ema, z_, y_, fixed_z, fixed_y)
 
-                if not (state_dict['itr'] % self.args.test_every):
-                    # G.eval()
-                    self.test(G, D, G_ema, state_dict, sample,
-                                self.metrics.get_inception_metrics)
-            # Increment epoch counter at end of epoch
-            state_dict['epoch'] += 1
+                if not (self.state_dict['itr'] % self.args.test_every):
+                    self.test(G, D, G_ema, sample, self.metrics.get_inception_metrics)
+            
+            self.state_dict['epoch'] += 1
