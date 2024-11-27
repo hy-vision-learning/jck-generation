@@ -46,29 +46,22 @@ def get_arg_parse():
     
     parser.add_argument('--test', type=int, help='테스트모드', default=0)
     parser.add_argument('--model_path', type=str, help='모델 폴더 이름', default='')
-    
     parser.add_argument('--log_file', type=int, help='로그 파일 출력 여부. 0=false, 1=true', default=1)
-    
     parser.add_argument('--model', type=ModelEnum, help='학습 모델', choices=list(ModelEnum), default=ModelEnum.DCGAN)
-    
     parser.add_argument('--num_workers', type=int, help='DataLoader workers', default=4)
     
+    parser.add_argument('--batch_size', type=int, help='배치 크기', default=50)
+    parser.add_argument('--num_epochs', type=int, help='에포크 수', default=500)
+    parser.add_argument('--num_D_steps', type=int, help='Discriminator 단계 수', default=4)
+    parser.add_argument('--G_ortho', type=float, help='Generator의 Ortho 값', default=0.0)
+    parser.add_argument('--ema_start', type=int, help='EMA 시작 시점', default=1000)
+    parser.add_argument('--test_every', type=int, help='테스트 주기', default=500)
+    parser.add_argument('--save_every', type=int, help='저장 주기', default=2000)
+    parser.add_argument('--ema_decay', type=float, help='EMA 감쇠율', default=0.999)
+    parser.add_argument('--D_ortho', type=float, help='Discriminator의 Ortho 값', default=0.0)
+    parser.add_argument('--num_inception_images', type=int, help='인셉션 메트릭 계산 샘플 수', default=10000)
+    
     args = parser.parse_args()
-    
-    args.batch_size = 50
-    args.num_epochs = 500
-    args.num_D_steps = 4
-    args.G_ortho = 0.0
-    args.ema_start = 1000
-    args.test_every = 500
-    args.save_every = 2000
-    
-    args.ema_decay = 0.999
-    args.toggle_grads = True
-    args.split_D = False
-    args.D_ortho = 0.0
-    args.G_ortho = 0.0
-    args.num_inception_images = 10000
     
     return args
 

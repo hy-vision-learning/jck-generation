@@ -10,7 +10,7 @@ from torchvision.utils import make_grid, save_image
 
 from model.DDIM.unet import UNet
 # from model.DDIM.diffusion import DDIMForwardTrainer, DDIMSampler, EMAHelper
-from model.BIGGAN.BIGGAN import Generator, Discriminator, G_D
+from model.BIGGAN.BIGGAN import Generator, Discriminator, BigGAN
 
 from metrics import Metrics
 from logger.main_logger import MainLogger
@@ -160,7 +160,7 @@ class BIGGANTrainer:
         return loss
     
     
-    def __save_model(self, typ, epoch, model_name, G, D, G_ema):
+    def __save_model(self, typ, epoch, model_name):
         save_path = os.path.join(self.args.save_path, typ)
         if not os.path.exists(save_path):
             os.makedirs(save_path)
@@ -172,36 +172,36 @@ class BIGGANTrainer:
         
         torch.save({
             'epoch': epoch,
-            'model_g': G.state_dict(),
-            'model_d': D.state_dict(),
-            'optim_g': G.optim.state_dict(),
-            'optim_d': D.optim.state_dict(),
-            'model_ema': G_ema.state_dict(),
+            'model_g': self.model_g.state_dict(),
+            'model_d': self.model_d.state_dict(),
+            'optim_g': self.optim_g.state_dict(),
+            'optim_d': self.optim_d.state_dict(),
+            'model_ema': self.ema_g.state_dict(),
             'state_dict': self.state_dict
         }, os.path.join(save_path, model_name))
     
     
-    def train(self, x, y, G, D, GD, z_, y_, ema):
+    def train(self, x, y, z_, y_):
         def toggle_grad(model, on_or_off):
             for param in model.parameters():
                 param.requires_grad = on_or_off
         
-        G.optim.zero_grad()
-        D.optim.zero_grad()
+        self.optim_g.zero_grad()
+        self.optim_d.zero_grad()
         
         x = torch.split(x, self.args.batch_size)
         y = torch.split(y, self.args.batch_size)
         counter = 0
         
-        toggle_grad(D, True)
-        toggle_grad(G, False)
+        toggle_grad(self.model_d, True)
+        toggle_grad(self.model_g, False)
         
         for step_index in range(self.args.num_D_steps):
-            D.optim.zero_grad()
+            self.optim_d.zero_grad()
             
             z_.sample_()
             y_.sample_()
-            D_fake, D_real = GD(z_[:self.args.batch_size], y_[:self.args.batch_size], 
+            D_fake, D_real = self.biggan(z_[:self.args.batch_size], y_[:self.args.batch_size], 
                                 x[counter], y[counter], train_G=False)
             
             D_loss_real, D_loss_fake = self.loss_hinge_dis(D_fake, D_real)
@@ -210,47 +210,47 @@ class BIGGANTrainer:
             counter += 1
             
             if self.args.D_ortho > 0.0:
-                self.ortho(D, self.args.D_ortho)
+                self.ortho(self.model_d, self.args.D_ortho)
         
-            D.optim.step()
+            self.optim_d.step()
         
-        toggle_grad(D, False)
-        toggle_grad(G, True)
+        toggle_grad(self.model_d, False)
+        toggle_grad(self.model_g, True)
         
-        G.optim.zero_grad()
+        self.optim_g.zero_grad()
           
         z_.sample_()
         y_.sample_()
-        D_fake = GD(z_, y_, train_G=True)
+        D_fake = self.biggan(z_, y_, train_G=True)
         G_loss = self.loss_hinge_gen(D_fake)
         G_loss.backward()
         
         if self.args.G_ortho > 0.0:
-            self.ortho(G, self.args.G_ortho, 
-                        blacklist=[param for param in G.shared.parameters()])
-        G.optim.step()
+            self.ortho(self.model_g, self.args.G_ortho, 
+                        blacklist=[param for param in self.model_g.shared.parameters()])
+        self.optim_g.step()
         
-        ema.update(self.state_dict['itr'])
+        self.ema.update(self.state_dict['itr'])
         
         return float(G_loss.item()), float(D_loss_real.item()), float(D_loss_fake.item())
     
     
-    def test(self, G, D, G_ema, sample, get_inception_metrics):
+    def test(self, sample, get_inception_metrics):
         IS_mean, IS_std, FID, intra_FID = get_inception_metrics(sample, self.args.num_inception_images, num_splits=10)
         
         if self.state_dict['best_IS'] < IS_mean:
             self.state_dict['best_IS'] = IS_mean
-            self.__save_model('is', self.state_dict['itr'], 'best.pt', G, D, G_ema)
+            self.__save_model('is', self.state_dict['itr'], 'best.pt')
         if self.state_dict['best_FID'] > FID:
             self.state_dict['best_FID'] = IS_mean
-            self.__save_model('FID', self.state_dict['itr'], 'best.pt', G, D, G_ema)
+            self.__save_model('FID', self.state_dict['itr'], 'best.pt')
         
         
-    def save_and_sample(self, G, D, G_ema, z_, y_, fixed_z, fixed_y, state_dict):
-        self.__save_model('sample', state_dict['epoch'], 'sample.pt', G, D, state_dict, G_ema)
+    def save_and_sample(self, z_, y_, fixed_z, fixed_y, state_dict):
+        self.__save_model('sample', state_dict['epoch'], 'sample.pt')
            
         with torch.no_grad():
-            fixed_Gz = G_ema(fixed_z, G_ema.shared(fixed_y))
+            fixed_Gz = self.ema_g(fixed_z, self.ema_g.shared(fixed_y))
         
         fixed_Gz = torch.tensor(fixed_Gz.tolist())
         image_path = os.path.join(self.args.save_path, 'sample', 'image')
@@ -269,52 +269,53 @@ class BIGGANTrainer:
         if not os.path.exists(self.args.samples_root):
             os.mkdir(self.args.samples_root)
 
-        G = model.Generator().to(self.device)
-        D = model.Discriminator().to(self.device)
+        self.model_g = model.Generator().to(self.device)
+        self.model_d = model.Discriminator().to(self.device)
         
-        G_ema = model.Generator(skip_init=True, no_optim=True).to(self.device)
-        ema = EMA(G, G_ema, self.args.ema_decay, self.args.ema_start)
+        self.optim_g = optim.Adam(params=self.model_g.parameters(), lr=2e-4, betas=(0.0, 0.999))
+        self.optim_d = optim.Adam(params=self.model_d.parameters(), lr=2e-4, betas=(0.0, 0.999))
         
-        GD = model.G_D(G, D)
-        self.logger.debug(f'G: {G}\nD: {D}')
+        self.ema_g = model.Generator(skip_init=True).to(self.device)
+        self.ema = EMA(self.model_g, self.ema_g, self.args.ema_decay, self.args.ema_start)
+        
+        self.biggan = model.BigGAN(self.model_g, self.model_d)
+        # self.logger.debug(f'G: {G}\nD: {D}')
         
         self.logger.debug('Number of params in G: {} D: {}'.format(
-            *[sum([p.data.nelement() for p in net.parameters()]) for net in [G,D]]))
+            *[sum([p.data.nelement() for p in net.parameters()]) for net in [self.model_g, self.model_d]]))
         
         self.state_dict = {'itr': 0, 'epoch': 0, 'best_IS': 0, 'best_FID': 999999}
         
         D_batch_size = self.args.batch_size * self.args.num_D_steps
         loader = self.get_data_loader(batch_size=D_batch_size)
 
-        z_, y_ = self.prepare_z_y(self.args.batch_size, G.dim_z, 100)
-        fixed_z, fixed_y = self.prepare_z_y(self.args.batch_size, G.dim_z, 100)  
+        z_, y_ = self.prepare_z_y(self.args.batch_size, self.model_g.dim_z, 100)
+        fixed_z, fixed_y = self.prepare_z_y(self.args.batch_size, self.model_g.dim_z, 100)  
         
         fixed_z.sample_()
         fixed_y.sample_()
         
-        sample = functools.partial(self.sample, G=G_ema, z_=z_, y_=y_)
-
-        print('Beginning training at epoch %d...' % self.state_dict['epoch'])
+        sample = functools.partial(self.sample, G=self.ema_g, z_=z_, y_=y_)
         
         for epoch in range(self.state_dict['epoch'], self.args.num_epochs):
             for i, (x, y) in enumerate(tqdm(loader, ncols=0)):
                 self.state_dict['itr'] += 1
                 
-                G.train()
-                D.train()
-                G_ema.train()
+                self.model_g.train()
+                self.model_d.train()
+                self.ema_g.train()
                 
                 x, y = x.to(self.device), y.to(self.device)
-                G_loss, D_loss_real, D_loss_fake = self.train(x, y, G, D, GD, z_, y_, ema)
+                G_loss, D_loss_real, D_loss_fake = self.train(x, y, z_, y_)
                 
                 if not (self.state_dict['itr'] % 100): 
                     self.logger.debug(f'itr: {self.state_dict["itr"]}\tG_loss: {G_loss:.4f}\t' + 
                                       f'D_loss_real: {D_loss_real:.4f}\tD_loss_fake: {D_loss_fake:.4f}')
                 
                 if not (self.state_dict['itr'] % self.args.save_every):
-                    self.save_and_sample(G, D, G_ema, z_, y_, fixed_z, fixed_y)
+                    self.save_and_sample(z_, y_, fixed_z, fixed_y)
 
                 if not (self.state_dict['itr'] % self.args.test_every):
-                    self.test(G, D, G_ema, sample, self.metrics.get_inception_metrics)
+                    self.test(sample, self.metrics.get_inception_metrics)
             
             self.state_dict['epoch'] += 1
