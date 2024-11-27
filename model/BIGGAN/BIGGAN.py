@@ -10,135 +10,58 @@ import torch.nn.functional as F
 from torch.nn import Parameter as P
 
 from model.BIGGAN import layers
-# from model.BIGGAN.sync_batchnorm import SynchronizedBatchNorm2d
-# from sync_batchnorm import SynchronizedBatchNorm2d as SyncBatchNorm2d
+from model.BIGGAN.sync_batchnorm import SynchronizedBatchNorm2d as SyncBatchNorm2d
 
-
-# Architectures for G
-# Attention is passed in in the format '32_64' to mean applying an attention
-# block at both resolution 32x32 and 64x64. Just '64' will apply at 64x64.
-def G_arch(ch=64, attention='64', ksize='333333', dilation='111111'):
-  arch = {}
-  arch[512] = {'in_channels' :  [ch * item for item in [16, 16, 8, 8, 4, 2, 1]],
-               'out_channels' : [ch * item for item in [16,  8, 8, 4, 2, 1, 1]],
-               'upsample' : [True] * 7,
-               'resolution' : [8, 16, 32, 64, 128, 256, 512],
-               'attention' : {2**i: (2**i in [int(item) for item in attention.split('_')])
-                              for i in range(3,10)}}
-  arch[256] = {'in_channels' :  [ch * item for item in [16, 16, 8, 8, 4, 2]],
-               'out_channels' : [ch * item for item in [16,  8, 8, 4, 2, 1]],
-               'upsample' : [True] * 6,
-               'resolution' : [8, 16, 32, 64, 128, 256],
-               'attention' : {2**i: (2**i in [int(item) for item in attention.split('_')])
-                              for i in range(3,9)}}
-  arch[128] = {'in_channels' :  [ch * item for item in [16, 16, 8, 4, 2]],
-               'out_channels' : [ch * item for item in [16, 8, 4, 2, 1]],
-               'upsample' : [True] * 5,
-               'resolution' : [8, 16, 32, 64, 128],
-               'attention' : {2**i: (2**i in [int(item) for item in attention.split('_')])
-                              for i in range(3,8)}}
-  arch[64]  = {'in_channels' :  [ch * item for item in [16, 16, 8, 4]],
-               'out_channels' : [ch * item for item in [16, 8, 4, 2]],
-               'upsample' : [True] * 4,
-               'resolution' : [8, 16, 32, 64],
-               'attention' : {2**i: (2**i in [int(item) for item in attention.split('_')])
-                              for i in range(3,7)}}
-  arch[32]  = {'in_channels' :  [ch * item for item in [4, 4, 4]],
-               'out_channels' : [ch * item for item in [4, 4, 4]],
-               'upsample' : [True] * 3,
-               'resolution' : [8, 16, 32],
-               'attention' : {2**i: (2**i in [int(item) for item in attention.split('_')])
-                              for i in range(3,6)}}
-
-  return arch
 
 class Generator(nn.Module):
-  def __init__(self, G_ch=64, dim_z=128, bottom_width=4, resolution=128,
+  def __init__(self, dim_z=128, bottom_width=4,
                G_kernel_size=3, G_attn='64', n_classes=1000,
                num_G_SVs=1, num_G_SV_itrs=1,
                G_shared=True, shared_dim=0, hier=False,
                cross_replica=False, mybn=False,
-               G_activation=nn.ReLU(inplace=False),
                G_lr=5e-5, G_B1=0.0, G_B2=0.999, adam_eps=1e-8,
-               BN_eps=1e-5, SN_eps=1e-12, G_mixed_precision=False, G_fp16=False,
-               G_init='ortho', skip_init=False, no_optim=False,
-               G_param='SN', norm_style='bn',
+               BN_eps=1e-5, SN_eps=1e-8,
+               G_init='ortho', skip_init=False, no_optim=False, norm_style='bn',
                **kwargs):
     super(Generator, self).__init__()
-    
-    
-    self.config = {
-            'G_ch': G_ch,
-            'dim_z': dim_z,
-            'bottom_width': bottom_width,
-            'resolution': resolution,
-            'G_kernel_size': G_kernel_size,
-            'G_attn': G_attn,
-            'n_classes': n_classes,
-            'num_G_SVs': num_G_SVs,
-            'num_G_SV_itrs': num_G_SV_itrs,
-            'G_shared': G_shared,
-            'shared_dim': shared_dim,
-            'hier': hier,
-            'cross_replica': cross_replica,
-            'mybn': mybn,
-            'G_activation': G_activation,
-            'G_lr': G_lr,
-            'G_B1': G_B1,
-            'G_B2': G_B2,
-            'adam_eps': adam_eps,
-            'BN_eps': BN_eps,
-            'SN_eps': SN_eps,
-            'G_mixed_precision': G_mixed_precision,
-            'G_fp16': G_fp16,
-            'G_init': G_init,
-            'skip_init': skip_init,
-            'no_optim': no_optim,
-            'G_param': G_param,
-            'norm_style': norm_style
-        }
-    
-    
     # Channel width mulitplier
-    self.ch = self.config['G_ch']
+    self.ch = 64
     # Dimensionality of the latent space
-    self.dim_z = self.config['dim_z']
+    self.dim_z = dim_z
     # The initial spatial dimensions
-    self.bottom_width = self.config['bottom_width']
-    # Resolution of the output
-    self.resolution = self.config['resolution']
-    # Kernel size
-    self.kernel_size = self.config['G_kernel_size']
-    # Attention
-    self.attention = self.config['G_attn']
-    # Number of classes, for use in categorical conditional generation
-    self.n_classes = self.config['n_classes']
-    # Use shared embeddings
-    self.G_shared = self.config['G_shared']
-    # Dimensionality of the shared embedding
-    self.shared_dim = self.config['shared_dim'] if self.config['shared_dim'] > 0 else self.dim_z
-    # Hierarchical latent space
-    self.hier = self.config['hier']
-    # Cross replica batchnorm
-    self.cross_replica = self.config['cross_replica']
-    # Use custom batchnorm
-    self.mybn = self.config['mybn']
-    # Nonlinearity for residual blocks
-    self.activation = self.config['G_activation']
+    self.bottom_width = bottom_width
+    # Kernel size?
+    self.kernel_size = G_kernel_size
+    # Attention?
+    self.attention = G_attn
+    # number of classes, for use in categorical conditional generation
+    self.n_classes = n_classes
+    # Use shared embeddings?
+    self.G_shared = G_shared
+    # Dimensionality of the shared embedding? Unused if not using G_shared
+    self.shared_dim = shared_dim if shared_dim > 0 else dim_z
+    # Hierarchical latent space?
+    self.hier = hier
+    # Cross replica batchnorm?
+    self.cross_replica = cross_replica
+    # Use my batchnorm?
+    self.mybn = mybn
     # Initialization style
-    self.init = self.config['G_init']
-    # Parameterization style
-    self.G_param = self.config['G_param']
+    self.init = G_init
     # Normalization style
-    self.norm_style = self.config['norm_style']
-    # Epsilon for BatchNorm
-    self.BN_eps = self.config['BN_eps']
-    # Epsilon for Spectral Norm
-    self.SN_eps = self.config['SN_eps']
-    # fp16
-    self.fp16 = self.config['G_fp16']
+    self.norm_style = norm_style
+    # Epsilon for BatchNorm?
+    self.BN_eps = BN_eps
+    # Epsilon for Spectral Norm?
+    self.SN_eps = SN_eps
     # Architecture dict
-    self.arch = G_arch(self.ch, self.attention)[resolution]
+    self.arch = {
+      'in_channels' :  [self.ch * item for item in [4, 4, 4]],
+      'out_channels' : [self.ch * item for item in [4, 4, 4]],
+      'upsample' : [True] * 3,
+      'resolution' : [8, 16, 32],
+      'attention' : {2**i: (2**i in [int(item) for item in self.attention.split('_')]) for i in range(3,6)}
+    }
 
     # If using hierarchical latents, adjust z
     if self.hier:
@@ -151,18 +74,13 @@ class Generator(nn.Module):
       self.num_slots = 1
       self.z_chunk_size = 0
 
-    # Which convs, batchnorms, and linear layers to use
-    if self.G_param == 'SN':
-      self.which_conv = functools.partial(layers.SNConv2d,
-                          kernel_size=3, padding=1,
-                          num_svs=num_G_SVs, num_itrs=num_G_SV_itrs,
-                          eps=self.SN_eps)
-      self.which_linear = functools.partial(layers.SNLinear,
-                          num_svs=num_G_SVs, num_itrs=num_G_SV_itrs,
-                          eps=self.SN_eps)
-    else:
-      self.which_conv = functools.partial(nn.Conv2d, kernel_size=3, padding=1)
-      self.which_linear = nn.Linear
+    self.which_conv = functools.partial(layers.SNConv2d,
+                        kernel_size=3, padding=1,
+                        num_svs=num_G_SVs, num_itrs=num_G_SV_itrs,
+                        eps=self.SN_eps)
+    self.which_linear = functools.partial(layers.SNLinear,
+                        num_svs=num_G_SVs, num_itrs=num_G_SV_itrs,
+                        eps=self.SN_eps)
       
     # We use a non-spectral-normed embedding here regardless;
     # For some reason applying SN to G's embedding seems to randomly cripple G
@@ -196,7 +114,7 @@ class Generator(nn.Module):
                              out_channels=self.arch['out_channels'][index],
                              which_conv=self.which_conv,
                              which_bn=self.which_bn,
-                             activation=self.activation,
+                             activation=nn.ReLU(inplace=False),
                              upsample=(functools.partial(F.interpolate, scale_factor=2)
                                        if self.arch['upsample'][index] else None))]]
 
@@ -213,7 +131,7 @@ class Generator(nn.Module):
     self.output_layer = nn.Sequential(layers.bn(self.arch['out_channels'][-1],
                                                 cross_replica=self.cross_replica,
                                                 mybn=self.mybn),
-                                    self.activation,
+                                    nn.ReLU(inplace=False),
                                     self.which_conv(self.arch['out_channels'][-1], 3))
 
     # Initialize weights. Optionally skip init for testing.
@@ -225,14 +143,7 @@ class Generator(nn.Module):
     if no_optim:
       return
     self.lr, self.B1, self.B2, self.adam_eps = G_lr, G_B1, G_B2, adam_eps
-    if G_mixed_precision:
-      print('Using fp16 adam in G...')
-      import utils
-      self.optim = utils.Adam16(params=self.parameters(), lr=self.lr,
-                           betas=(self.B1, self.B2), weight_decay=0,
-                           eps=self.adam_eps)
-    else:
-      self.optim = optim.Adam(params=self.parameters(), lr=self.lr,
+    self.optim = optim.Adam(params=self.parameters(), lr=self.lr,
                            betas=(self.B1, self.B2), weight_decay=0,
                            eps=self.adam_eps)
 
@@ -286,82 +197,48 @@ class Generator(nn.Module):
     return torch.tanh(self.output_layer(h))
 
 
-# Discriminator architecture, same paradigm as G's above
-def D_arch(ch=64, attention='64',ksize='333333', dilation='111111'):
-  arch = {}
-  arch[256] = {'in_channels' :  [3] + [ch*item for item in [1, 2, 4, 8, 8, 16]],
-               'out_channels' : [item * ch for item in [1, 2, 4, 8, 8, 16, 16]],
-               'downsample' : [True] * 6 + [False],
-               'resolution' : [128, 64, 32, 16, 8, 4, 4 ],
-               'attention' : {2**i: 2**i in [int(item) for item in attention.split('_')]
-                              for i in range(2,8)}}
-  arch[128] = {'in_channels' :  [3] + [ch*item for item in [1, 2, 4, 8, 16]],
-               'out_channels' : [item * ch for item in [1, 2, 4, 8, 16, 16]],
-               'downsample' : [True] * 5 + [False],
-               'resolution' : [64, 32, 16, 8, 4, 4],
-               'attention' : {2**i: 2**i in [int(item) for item in attention.split('_')]
-                              for i in range(2,8)}}
-  arch[64]  = {'in_channels' :  [3] + [ch*item for item in [1, 2, 4, 8]],
-               'out_channels' : [item * ch for item in [1, 2, 4, 8, 16]],
-               'downsample' : [True] * 4 + [False],
-               'resolution' : [32, 16, 8, 4, 4],
-               'attention' : {2**i: 2**i in [int(item) for item in attention.split('_')]
-                              for i in range(2,7)}}
-  arch[32]  = {'in_channels' :  [3] + [item * ch for item in [4, 4, 4]],
-               'out_channels' : [item * ch for item in [4, 4, 4, 4]],
-               'downsample' : [True, True, False, False],
-               'resolution' : [16, 16, 16, 16],
-               'attention' : {2**i: 2**i in [int(item) for item in attention.split('_')]
-                              for i in range(2,6)}}
-  return arch
-
 class Discriminator(nn.Module):
 
-  def __init__(self, D_ch=64, D_wide=True, resolution=128,
+  def __init__(self, D_wide=True,
                D_kernel_size=3, D_attn='64', n_classes=1000,
-               num_D_SVs=1, num_D_SV_itrs=1, D_activation=nn.ReLU(inplace=False),
+               num_D_SVs=1, num_D_SV_itrs=1,
                D_lr=2e-4, D_B1=0.0, D_B2=0.999, adam_eps=1e-8,
-               SN_eps=1e-12, output_dim=1, D_mixed_precision=False, D_fp16=False,
-               D_init='ortho', skip_init=False, D_param='SN', **kwargs):
+               SN_eps=1e-8, output_dim=1,
+               D_init='ortho', skip_init=False, **kwargs):
     super(Discriminator, self).__init__()
     # Width multiplier
-    self.ch = D_ch
+    self.ch = 64
     # Use Wide D as in BigGAN and SA-GAN or skinny D as in SN-GAN?
     self.D_wide = D_wide
-    # Resolution
-    self.resolution = resolution
     # Kernel size
     self.kernel_size = D_kernel_size
     # Attention?
     self.attention = D_attn
     # Number of classes
     self.n_classes = n_classes
-    # Activation
-    self.activation = D_activation
     # Initialization style
     self.init = D_init
-    # Parameterization style
-    self.D_param = D_param
     # Epsilon for Spectral Norm?
     self.SN_eps = SN_eps
-    # Fp16?
-    self.fp16 = D_fp16
     # Architecture
-    self.arch = D_arch(self.ch, self.attention)[resolution]
+    self.arch = {
+      'in_channels' :  [3] + [item * self.ch for item in [4, 4, 4]],
+      'out_channels' : [item * self.ch for item in [4, 4, 4, 4]],
+      'downsample' : [True, True, False, False],
+      'resolution' : [16, 16, 16, 16],
+      'attention' : {2**i: 2**i in [int(item) for item in self.attention.split('_')] for i in range(2,6)}
+    }
 
-    # Which convs, batchnorms, and linear layers to use
-    # No option to turn off SN in D right now
-    if self.D_param == 'SN':
-      self.which_conv = functools.partial(layers.SNConv2d,
-                          kernel_size=3, padding=1,
-                          num_svs=num_D_SVs, num_itrs=num_D_SV_itrs,
-                          eps=self.SN_eps)
-      self.which_linear = functools.partial(layers.SNLinear,
-                          num_svs=num_D_SVs, num_itrs=num_D_SV_itrs,
-                          eps=self.SN_eps)
-      self.which_embedding = functools.partial(layers.SNEmbedding,
-                              num_svs=num_D_SVs, num_itrs=num_D_SV_itrs,
-                              eps=self.SN_eps)
+    self.which_conv = functools.partial(layers.SNConv2d,
+                        kernel_size=3, padding=1,
+                        num_svs=num_D_SVs, num_itrs=num_D_SV_itrs,
+                        eps=self.SN_eps)
+    self.which_linear = functools.partial(layers.SNLinear,
+                        num_svs=num_D_SVs, num_itrs=num_D_SV_itrs,
+                        eps=self.SN_eps)
+    self.which_embedding = functools.partial(layers.SNEmbedding,
+                            num_svs=num_D_SVs, num_itrs=num_D_SV_itrs,
+                            eps=self.SN_eps)
     # Prepare model
     # self.blocks is a doubly-nested list of modules, the outer loop intended
     # to be over blocks at a given resolution (resblocks and/or self-attention)
@@ -371,7 +248,7 @@ class Discriminator(nn.Module):
                        out_channels=self.arch['out_channels'][index],
                        which_conv=self.which_conv,
                        wide=self.D_wide,
-                       activation=self.activation,
+                       activation=nn.ReLU(inplace=False),
                        preactivation=(index > 0),
                        downsample=(nn.AvgPool2d(2) if self.arch['downsample'][index] else None))]]
       # If attention on this block, attach it to the end
@@ -393,14 +270,8 @@ class Discriminator(nn.Module):
 
     # Set up optimizer
     self.lr, self.B1, self.B2, self.adam_eps = D_lr, D_B1, D_B2, adam_eps
-    if D_mixed_precision:
-      print('Using fp16 adam in D...')
-      import utils
-      self.optim = utils.Adam16(params=self.parameters(), lr=self.lr,
-                             betas=(self.B1, self.B2), weight_decay=0, eps=self.adam_eps)
-    else:
-      self.optim = optim.Adam(params=self.parameters(), lr=self.lr,
-                             betas=(self.B1, self.B2), weight_decay=0, eps=self.adam_eps)
+    self.optim = optim.Adam(params=self.parameters(), lr=self.lr,
+                            betas=(self.B1, self.B2), weight_decay=0, eps=self.adam_eps)
     # LR scheduling, left here for forward compatibility
     # self.lr_sched = {'itr' : 0}# if self.progressive else {}
     # self.j = 0
@@ -431,7 +302,7 @@ class Discriminator(nn.Module):
       for block in blocklist:
         h = block(h)
     # Apply global sum pooling as in SN-GAN
-    h = torch.sum(self.activation(h), [2, 3])
+    h = torch.sum(nn.ReLU(inplace=False)(h), [2, 3])
     # Get initial class-unconditional output
     out = self.linear(h)
     # Get projection of final featureset onto class vectors and add to evidence
@@ -446,40 +317,21 @@ class G_D(nn.Module):
     self.G = G
     self.D = D
 
-  def forward(self, z, gy, x=None, dy=None, train_G=False, return_G_z=False,
-              split_D=False):              
+  def forward(self, z, gy, x=None, dy=None, train_G=False, return_G_z=False):              
     # If training G, enable grad tape
     with torch.set_grad_enabled(train_G):
       # Get Generator output given noise
       G_z = self.G(z, self.G.shared(gy))
-      # Cast as necessary
-      if self.G.fp16 and not self.D.fp16:
-        G_z = G_z.float()
-      if self.D.fp16 and not self.G.fp16:
-        G_z = G_z.half()
     # Split_D means to run D once with real data and once with fake,
     # rather than concatenating along the batch dimension.
-    if split_D:
-      D_fake = self.D(G_z, gy)
-      if x is not None:
-        D_real = self.D(x, dy)
-        return D_fake, D_real
-      else:
-        if return_G_z:
-          return D_fake, G_z
-        else:
-          return D_fake
-    # If real data is provided, concatenate it with the Generator's output
-    # along the batch dimension for improved efficiency.
+    D_input = torch.cat([G_z, x], 0) if x is not None else G_z
+    D_class = torch.cat([gy, dy], 0) if dy is not None else gy
+    # Get Discriminator output
+    D_out = self.D(D_input, D_class)
+    if x is not None:
+      return torch.split(D_out, [G_z.shape[0], x.shape[0]]) # D_fake, D_real
     else:
-      D_input = torch.cat([G_z, x], 0) if x is not None else G_z
-      D_class = torch.cat([gy, dy], 0) if dy is not None else gy
-      # Get Discriminator output
-      D_out = self.D(D_input, D_class)
-      if x is not None:
-        return torch.split(D_out, [G_z.shape[0], x.shape[0]]) # D_fake, D_real
+      if return_G_z:
+        return D_out, G_z
       else:
-        if return_G_z:
-          return D_out, G_z
-        else:
-          return D_out
+        return D_out

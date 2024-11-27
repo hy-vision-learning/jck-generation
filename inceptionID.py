@@ -112,17 +112,27 @@ def get_net_output(train_loader, net,device):
 
 
 
-def accumulate_inception_activations(sample, net, num_inception_images=50000):
+def accumulate_inception_activations(sample, net, num_inception_images=50000, batch_size=50):
   pool, logits, labels = [], [], []
+  
+  count = num_inception_images // 100
+  assert num_inception_images % 100 == 0, "num_inception_images must be divisible by 100"
+  balanced_labels = []
+  for i in range(100):
+    balanced_labels.extend([i] * count)
+  
   i = 0
   while (torch.cat(logits, 0).shape[0] if len(logits) else 0) < num_inception_images:
     with torch.no_grad():
-      images, labels_val = sample()
+      images, labels_val = sample(set_labels=True, labels=balanced_labels[i:i + batch_size])
+      # labels_val = torch.tensor(balanced_labels[i:i + images.shape[0]])
       pool_val, logits_val = net(images.float())
       pool += [pool_val]
       logits += [F.softmax(logits_val, 1)]
-      labels += [labels_val]
-  return torch.cat(pool, 0), torch.cat(logits, 0), torch.cat(labels, 0)
+      labels += labels_val.tolist()
+      del labels_val
+      i += batch_size
+  return torch.cat(pool, 0), torch.cat(logits, 0), torch.LongTensor(labels)
 
   
 def calculate_fid(mu1, sigma1, mu2, sigma2):
@@ -132,6 +142,97 @@ def calculate_fid(mu1, sigma1, mu2, sigma2):
         covmean = covmean.real
     fid = diff.dot(diff) + np.trace(sigma1 + sigma2 - 2 * covmean)
     return fid
+  
+def sqrt_newton_schulz(A, numIters, dtype=None, epsilon=1e-6):
+  with torch.no_grad():
+    if dtype is None:
+      dtype = A.type()
+    batchSize = A.shape[0]
+    dim = A.shape[1]
+    normA = A.mul(A).sum(dim=1).sum(dim=1).sqrt()
+    Y = A.div(normA.view(batchSize, 1, 1).expand_as(A));
+    I = torch.eye(dim,dim).view(1, dim, dim).repeat(batchSize,1,1).type(dtype)
+    Z = torch.eye(dim,dim).view(1, dim, dim).repeat(batchSize,1,1).type(dtype)
+    for i in range(numIters):
+      # previous_Y = Y.clone()
+      T = 0.5*(3.0*I - Z.bmm(Y))
+      Y = Y.bmm(T)
+      Z = T.bmm(Z)
+      # if torch.isnan(Y).any():
+      #   Y = previous_Y
+      #   break
+    sA = Y*torch.sqrt(normA).view(batchSize, 1, 1).expand_as(A)
+  return sA
+
+def _approximation_error(matrix: torch.Tensor, s_matrix: torch.Tensor) -> torch.Tensor:
+    norm_of_matrix = torch.norm(matrix)
+    error = matrix - torch.mm(s_matrix, s_matrix)
+    error = torch.norm(error) / norm_of_matrix
+    return error
+
+
+def sqrtm_newton_schulz(matrix: torch.Tensor, num_iters: int = 100):
+    r"""
+    Square root of matrix using Newton-Schulz Iterative method
+    Source: https://github.com/msubhransu/matrix-sqrt/blob/master/matrix_sqrt.py
+    Args:
+        matrix: matrix or batch of matrices
+        num_iters: Number of iteration of the method
+    Returns:
+        Square root of matrix
+        Error
+    """
+    expected_num_dims = 2
+    if matrix.dim() != expected_num_dims:
+        raise ValueError(f'Input dimension equals {matrix.dim()} {matrix.shape}, expected {expected_num_dims}')
+
+    if num_iters <= 0:
+        raise ValueError(f'Number of iteration equals {num_iters}, expected greater than 0')
+
+    dim = matrix.size(0)
+    norm_of_matrix = matrix.norm(p='fro')
+    Y = matrix.div(norm_of_matrix)
+    I = torch.eye(dim, dim, requires_grad=False).to(matrix)
+    Z = torch.eye(dim, dim, requires_grad=False).to(matrix)
+
+    s_matrix = torch.empty_like(matrix)
+    error = torch.empty(1).to(matrix)
+
+    for _ in range(num_iters):
+        T = 0.5 * (3.0 * I - Z.mm(Y))
+        Y = Y.mm(T)
+        Z = T.mm(Z)
+
+        s_matrix = Y * torch.sqrt(norm_of_matrix)
+        error = _approximation_error(matrix, s_matrix)
+        if torch.isclose(error, torch.tensor([0.]).to(error), atol=1e-5):
+            break
+
+    return s_matrix, error
+
+def torch_cov(m, rowvar=False):
+  if m.dim() > 2:
+    raise ValueError('m has more than 2 dimensions')
+  if m.dim() < 2:
+    m = m.view(1, -1)
+  if not rowvar and m.size(0) != 1:
+    m = m.t()
+  fact = 1.0 / (m.size(1) - 1)
+  m -= torch.mean(m, dim=1, keepdim=True)
+  mt = m.t()
+  return fact * m.matmul(mt).squeeze()
+
+def torch_calculate_fid(mu1, sigma1, mu2, sigma2, eps=1e-6):
+  diff = mu1 - mu2
+  # covmean = sqrtm_newton_schulz(sigma1.mm(sigma2), 50)[0]
+  covmean = sqrt_newton_schulz(sigma1.mm(sigma2).unsqueeze(0), 50).squeeze(0)
+  # covmean, _ = sqrtm(sigma1.cpu().numpy().dot(sigma2.cpu().numpy()), disp=False)
+  # if np.iscomplexobj(covmean):
+  #     covmean = covmean.real
+  # covmean = torch.from_numpy(covmean).cuda()
+  
+  out = (diff.dot(diff) +  torch.trace(sigma1) + torch.trace(sigma2) - 2 * torch.trace(covmean))
+  return out
   
 def calculate_inception_score(pred, num_splits=10):
   scores = []
@@ -144,12 +245,12 @@ def calculate_inception_score(pred, num_splits=10):
 
 
 
-def calculate_intra_fid(pool, logits,labels ,g_pool, g_logits, g_labels, chage_superclass=True):
+def calculate_intra_fid(super_mu, super_sigma, g_pool, g_logits, g_labels, chage_superclass=True, use_torch=True):
   intra_fids = []
   super_class = super_class_mapping()
   
-  super_labels = [super_class[i] for i in labels]
-  super_labels = np.array(super_labels)
+  # super_labels = [super_class[i] for i in labels]
+  # super_labels = np.array(super_labels)
   
   if chage_superclass:
     g_super_labels = [super_class[i] for i in g_labels]
@@ -157,22 +258,35 @@ def calculate_intra_fid(pool, logits,labels ,g_pool, g_logits, g_labels, chage_s
   else:
     g_super_labels = np.array(g_labels.cpu())
   
+  _, counts = np.unique(g_super_labels, return_counts=True)
+  assert np.all(counts == counts[0]), "라벨 개수가 동일하지 않습니다."
+  
+  # if use_torch:
+  #   pool = torch.tensor(pool, device='cuda')
+    
   for super_idx, _ in superclass_mapping.items():
-    mask = (super_labels == super_idx)
+    # mask = (super_labels == super_idx)
     g_mask = (g_super_labels == super_idx)
     
-    pool_low = pool[mask]
+    # pool_low = pool[mask]
     g_pool_low = g_pool[g_mask]
     
-    assert 2500 == len(g_pool_low), "super-classes count error"
-    if len(pool_low) == 0 or len(g_pool_low) == 0:
-      continue
+    # assert 2500 == len(g_pool_low), "super-classes count error"
+    # if len(pool_low) == 0 or len(g_pool_low) == 0:
+    #   continue
     
-    mu, sigma = np.mean(g_pool_low.cpu().numpy(), axis=0), np.cov(g_pool_low.cpu().numpy(), rowvar=False)
-    mu_data, sigma_data = np.mean(pool_low, axis=0), np.cov(pool_low, rowvar=False)
-    
-    fid = calculate_fid(mu, sigma, mu_data, sigma_data)
+    mu_data, sigma_data = super_mu[super_idx], super_sigma[super_idx]
+    if use_torch:
+      # g_pool_low = torch.tensor(g_pool_low, device='cuda')
+      mu, sigma = torch.mean(g_pool_low, 0), torch_cov(g_pool_low, rowvar=False)
+      mu_data, sigma_data = torch.tensor(mu_data, device='cuda'), torch.tensor(sigma_data, device='cuda')
+      fid = torch_calculate_fid(mu, sigma, mu_data, sigma_data)
+      fid = float(fid.cpu().numpy())
+    else:
+      mu, sigma = np.mean(g_pool_low.cpu().numpy(), axis=0), np.cov(g_pool_low.cpu().numpy(), rowvar=False)
+      fid = calculate_fid(mu, sigma, mu_data, sigma_data)
     intra_fids.append(fid)
+  # print(intra_fids, np.mean(intra_fids))
     
   return np.mean(intra_fids), intra_fids
     

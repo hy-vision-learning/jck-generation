@@ -6,3 +6,11 @@ def get_default_device() -> torch.device:
         return torch.device('cuda')
     else:
         return torch.device('cpu')
+    
+    
+    
+    
+    
+    
+    
+    
