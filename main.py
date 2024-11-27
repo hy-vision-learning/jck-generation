@@ -44,12 +44,14 @@ torch.backends.cudnn.benchmark = False
 def get_arg_parse():
     parser = argparse.ArgumentParser()
     
-    parser.add_argument('-t', '--test', type=int, help='테스트모드', default=0)
-    parser.add_argument('-pm', '--model_path', type=str, help='모델 폴더 이름', default='')
+    parser.add_argument('--test', type=int, help='테스트모드', default=0)
+    parser.add_argument('--model_path', type=str, help='모델 폴더 이름', default='')
     
-    parser.add_argument('-lf', '--log_file', type=int, help='로그 파일 출력 여부. 0=false, 1=true', default=1)
+    parser.add_argument('--log_file', type=int, help='로그 파일 출력 여부. 0=false, 1=true', default=1)
     
-    parser.add_argument('-m', '--model', type=ModelEnum, help='학습 모델', choices=list(ModelEnum), default=ModelEnum.DCGAN)
+    parser.add_argument('--model', type=ModelEnum, help='학습 모델', choices=list(ModelEnum), default=ModelEnum.DCGAN)
+    
+    parser.add_argument('--num_workers', type=int, help='DataLoader workers', default=4)
     
     # 고정된 파라미터 설정
     args = parser.parse_args()
@@ -72,7 +74,6 @@ def get_arg_parse():
     args.num_save_copies = 2
     
     args.ema_decay = 0.999
-    args.G_batch_size = 0
     args.toggle_grads = True
     args.split_D = False
     args.D_ortho = 0.0
@@ -142,7 +143,7 @@ def main(args: argparse.Namespace):
         if args.test:
             trainer.test()
         else:
-            trainer.run(vars(args))
+            trainer.run()
     
     # model = QsingBertModel()
     # trainer = Trainer(args, model, data_prep)
