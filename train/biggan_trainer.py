@@ -236,7 +236,7 @@ class BIGGANTrainer:
     
     
     def test(self, sample, get_inception_metrics):
-        IS_mean, IS_std, FID, intra_FID = get_inception_metrics(sample, self.args.num_inception_images, num_splits=10)
+        IS_mean, IS_std, FID, intra_FID = get_inception_metrics(sample, self.args.num_inception_images, num_splits=10, full=False)
         
         if self.state_dict['best_IS'] < IS_mean:
             self.state_dict['best_IS'] = IS_mean

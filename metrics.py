@@ -44,33 +44,37 @@ class Metrics:
         return inceptionID.load_inception_net()
     
     
-    def get_inception_metrics(self, sample, num_inception_images, num_splits=10, use_torch=True, print_intra=False):
-        self.logger.debug(f'use_torch: {use_torch}\tgenerating samples')
+    def get_inception_metrics(self, sample, num_inception_images, num_splits=10, full=False):
+        # self.logger.debug(f'use_torch: {use_torch}\tgenerating samples')
+        if full:
+            num_inception_images = 50000
+        
         g_pool, g_logits, g_labels = inceptionID.accumulate_inception_activations(sample, self.net, num_inception_images, batch_size=self.args.batch_size)
         
         self.logger.debug('Calculating Inception Score')
         IS_mean, IS_std = inceptionID.calculate_inception_score(g_logits.cpu().numpy(), num_splits)
         
         self.logger.debug('Calculating means and covariances')
-        if use_torch:
+        if not full:
             mu, sigma = torch.mean(g_pool, 0), inceptionID.torch_cov(g_pool, rowvar=False)
         else:
             mu, sigma = np.mean(g_pool.cpu().numpy(), axis=0), np.cov(g_pool.cpu().numpy(), rowvar=False)
         
         self.logger.debug('Calculating FID')
-        if use_torch:
+        if not full:
             FID = inceptionID.torch_calculate_fid(mu, sigma,
                     torch.tensor(self.data_mu).float().cuda(), torch.tensor(self.data_sigma).float().cuda(), atol=1e-8)
             FID = float(FID.cpu().numpy())
         else:
             FID = inceptionID.calculate_fid(mu, sigma, self.data_mu, self.data_sigma)
         
-        intra_fids = None
-        if print_intra:
-            self.logger.debug('Calculating intra-FID')
-            intra_fids, _ = inceptionID.calculate_intra_fid(self.super_mu, self.super_sigma, g_pool, g_logits, g_labels, chage_superclass=True, use_torch=False)
+        self.logger.debug('Calculating intra-FID')
+        if full:
+            intra_fids, _ = inceptionID.calculate_intra_fid(self.super_mu, self.super_sigma, g_pool, g_logits, g_labels, chage_superclass=True)
+        else:
+            intra_fids, _ = inceptionID.torch_calculate_intra_fid(self.super_mu, self.super_sigma, g_pool, g_logits, g_labels, chage_superclass=True)
         
         del mu, sigma, g_pool, g_logits, g_labels
         
-        self.logger.debug(f'Inception Score: {IS_mean} +/- {IS_std}, FID: {FID}, ' + (f'Intra-FID: {intra_fids}' if print_intra else ''))
+        self.logger.debug(f'Inception Score: {IS_mean} +/- {IS_std}, FID: {FID}, Intra-FID: {intra_fids}')
         return IS_mean, IS_std, FID, intra_fids
