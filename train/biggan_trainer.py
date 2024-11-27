@@ -263,6 +263,8 @@ class BIGGANTrainer:
     def test(self, G, D, G_ema, state_dict, config, sample, get_inception_metrics):
         print('Gathering inception metrics...')
         IS_mean, IS_std, FID, intra_FID = get_inception_metrics(sample, config['num_inception_images'], num_splits=10)
+        # IS_mean, IS_std, FID = get_inception_metrics(sample, config['num_inception_images'], num_splits=10)
+        # print('Itr %d: PYTORCH UNOFFICIAL Inception Score is %3.3f +/- %3.3f, PYTORCH UNOFFICIAL FID is %5.4f' % (state_dict['itr'], IS_mean, IS_std, FID))
         
         if ((config['which_best'] == 'IS' and IS_mean > state_dict['best_IS'])
             or (config['which_best'] == 'FID' and FID < state_dict['best_FID'])):
@@ -288,6 +290,14 @@ class BIGGANTrainer:
         
         
     def run(self, config):
+        import train_fns
+        # import inception_utils
+        
+        config['resolution'] = 32
+        config['n_classes'] = 100
+        config['G_activation'] = nn.ReLU(inplace=False)
+        config['D_activation'] = nn.ReLU(inplace=False)
+        
         for key in ['weights', 'logs', 'samples']:
             config[f'{key}_root'] = f'{self.args.save_path}/{key}'
             if not os.path.exists(config[f'{key}_root']):
@@ -323,6 +333,8 @@ class BIGGANTrainer:
         loaders = self.get_data_loaders(**{**config, 'batch_size': D_batch_size,
                                             'start_itr': state_dict['itr']})
 
+        # get_inception_metrics = inception_utils.prepare_inception_metrics(config['dataset'], config['parallel'], config['no_fid'])
+
         G_batch_size = max(config['G_batch_size'], config['batch_size'])
         z_, y_ = self.prepare_z_y(G_batch_size, G.dim_z, 100)
         fixed_z, fixed_y = self.prepare_z_y(G_batch_size, G.dim_z, 100)  
@@ -330,6 +342,8 @@ class BIGGANTrainer:
         fixed_z.sample_()
         fixed_y.sample_()
         
+        train = train_fns.GAN_training_function(G, D, GD, z_, y_, 
+                                            ema, state_dict, config)
         sample = functools.partial(self.sample, G=G_ema, z_=z_, y_=y_, config=config)
 
         print('Beginning training at epoch %d...' % state_dict['epoch'])
@@ -343,7 +357,8 @@ class BIGGANTrainer:
                 G_ema.train()
                 
                 x, y = x.to(self.device), y.to(self.device)
-                metrics = self.train(x, y, G, D, GD, z_, y_, ema, state_dict, config)
+                # metrics = self.train(x, y, G, D, GD, z_, y_, ema, state_dict, config)
+                metrics = train(x, y)
                 
                 if not (state_dict['itr'] % 100): 
                     self.logger.debug(f'itr: {state_dict["itr"]}\t{"\t".join([f"{k}: {v:.4f}" for k, v in metrics.items()])}')
@@ -357,5 +372,7 @@ class BIGGANTrainer:
                     # G.eval()
                     self.test(G, D, G_ema, state_dict, config, sample,
                                 self.metrics.get_inception_metrics)
+                    # self.test(G, D, G_ema, state_dict, config, sample,
+                    #             get_inception_metrics)
             # Increment epoch counter at end of epoch
             state_dict['epoch'] += 1

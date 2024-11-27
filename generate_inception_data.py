@@ -44,9 +44,9 @@ super_sigma = np.zeros((100, 2048, 2048), dtype=np.float32)
 for super_idx, _ in inceptionID.superclass_mapping.items():
     mask = (super_labels == super_idx)
     pool_low = pool[mask]
-    mu_data, sigma_data = np.mean(pool_low, axis=0), np.cov(pool_low, rowvar=False)
-    super_mu[super_idx] = mu_data
-    super_sigma[super_idx] = sigma_data
+    mu_part, sigma_part = np.mean(pool_low, axis=0), np.cov(pool_low, rowvar=False)
+    super_mu[super_idx] = mu_part
+    super_sigma[super_idx] = sigma_part
 
 
 if not os.path.exists('./data'):

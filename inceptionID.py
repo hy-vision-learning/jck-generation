@@ -171,7 +171,7 @@ def _approximation_error(matrix: torch.Tensor, s_matrix: torch.Tensor) -> torch.
     return error
 
 
-def sqrtm_newton_schulz(matrix: torch.Tensor, num_iters: int = 100):
+def sqrtm_newton_schulz(matrix: torch.Tensor, num_iters: int=100, atol=1e-5):
     r"""
     Square root of matrix using Newton-Schulz Iterative method
     Source: https://github.com/msubhransu/matrix-sqrt/blob/master/matrix_sqrt.py
@@ -205,7 +205,7 @@ def sqrtm_newton_schulz(matrix: torch.Tensor, num_iters: int = 100):
 
         s_matrix = Y * torch.sqrt(norm_of_matrix)
         error = _approximation_error(matrix, s_matrix)
-        if torch.isclose(error, torch.tensor([0.]).to(error), atol=1e-5):
+        if torch.isclose(error, torch.tensor([0.]).to(error), atol=atol):
             break
 
     return s_matrix, error
@@ -222,10 +222,10 @@ def torch_cov(m, rowvar=False):
   mt = m.t()
   return fact * m.matmul(mt).squeeze()
 
-def torch_calculate_fid(mu1, sigma1, mu2, sigma2, eps=1e-6):
+def torch_calculate_fid(mu1, sigma1, mu2, sigma2, atol=1e-5):
   diff = mu1 - mu2
-  # covmean = sqrtm_newton_schulz(sigma1.mm(sigma2), 50)[0]
-  covmean = sqrt_newton_schulz(sigma1.mm(sigma2).unsqueeze(0), 50).squeeze(0)
+  covmean = sqrtm_newton_schulz(sigma1.mm(sigma2), 50, atol)[0]
+  # covmean = sqrt_newton_schulz(sigma1.mm(sigma2).unsqueeze(0), 50).squeeze(0)
   # covmean, _ = sqrtm(sigma1.cpu().numpy().dot(sigma2.cpu().numpy()), disp=False)
   # if np.iscomplexobj(covmean):
   #     covmean = covmean.real
@@ -280,7 +280,7 @@ def calculate_intra_fid(super_mu, super_sigma, g_pool, g_logits, g_labels, chage
       # g_pool_low = torch.tensor(g_pool_low, device='cuda')
       mu, sigma = torch.mean(g_pool_low, 0), torch_cov(g_pool_low, rowvar=False)
       mu_data, sigma_data = torch.tensor(mu_data, device='cuda'), torch.tensor(sigma_data, device='cuda')
-      fid = torch_calculate_fid(mu, sigma, mu_data, sigma_data)
+      fid = torch_calculate_fid(mu, sigma, mu_data, sigma_data, atol=5e-4)
       fid = float(fid.cpu().numpy())
     else:
       mu, sigma = np.mean(g_pool_low.cpu().numpy(), axis=0), np.cov(g_pool_low.cpu().numpy(), rowvar=False)
