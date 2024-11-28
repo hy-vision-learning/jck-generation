@@ -39,9 +39,6 @@ import torch.nn.functional as F
 from torch.nn import Parameter as P
 import torchvision
 
-# Import my stuff
-from model.BIGGAN.sync_batchnorm import patch_replication_callback
-
 import model.BIGGAN.BIGGAN as model
 from datetime import datetime
 
@@ -235,40 +232,57 @@ class BIGGANTrainer:
         return float(G_loss.item()), float(D_loss_real.item()), float(D_loss_fake.item())
     
     
-    def test(self, sample, get_inception_metrics):
-        IS_mean, IS_std, FID, intra_FID = get_inception_metrics(sample, self.args.num_inception_images, num_splits=10, full=False)
+    def test(self, sample, full=False):
+        self.logger.debug(f'full test: {full}')
+        IS_mean, IS_std, FID, intra_FID = self.metrics.get_inception_metrics(sample, self.args.num_inception_images, num_splits=10, full=full)
+        if not full:
+            self.logger.debug(f'Saved metrics: IS: {self.state_dict["best_IS"]}, FID: {self.state_dict["best_FID"]}, intra-FID: {self.state_dict["best_intra_FID"]}')
+            return
         
-        if self.state_dict['best_IS'] < IS_mean:
+        if not math.isnan(IS_mean) and self.state_dict['best_IS'] < IS_mean:
+            self.logger.debug(f'best IS: {self.state_dict['best_IS']} -> {IS_mean}')
             self.state_dict['best_IS'] = IS_mean
             self.__save_model('is', self.state_dict['itr'], 'best.pt')
-        if self.state_dict['best_FID'] > FID:
-            self.state_dict['best_FID'] = IS_mean
+        if not math.isnan(FID) and self.state_dict['best_FID'] > FID:
+            self.logger.debug(f'best FID: {self.state_dict['best_FID']} -> {FID}')
+            self.state_dict['best_FID'] = FID
             self.__save_model('FID', self.state_dict['itr'], 'best.pt')
+        if not math.isnan(intra_FID) and self.state_dict['best_intra_FID'] > intra_FID:
+            self.logger.debug(f'best intra-FID: {self.state_dict['best_intra_FID']} -> {intra_FID}')
+            self.state_dict['best_intra_FID'] = intra_FID
+            self.__save_model('intra_FID', self.state_dict['itr'], 'best.pt')
         
         
-    def save_and_sample(self, z_, y_, fixed_z, fixed_y, state_dict):
-        self.__save_model('sample', state_dict['epoch'], 'sample.pt')
+    def save_and_sample(self, z_, y_, fixed_z, fixed_y):
+        self.__save_model('sample', self.state_dict['epoch'], 'sample.pt')
            
         with torch.no_grad():
             fixed_Gz = self.ema_g(fixed_z, self.ema_g.shared(fixed_y))
         
         fixed_Gz = torch.tensor(fixed_Gz.tolist())
-        image_path = os.path.join(self.args.save_path, 'sample', 'image')
+        image_path = os.path.join(self.args.save_path, 'sample', 'image', f'{self.state_dict["itr"]}')
         if not os.path.isdir(image_path):
-            os.mkdir(image_path)
-        image_filename = os.path.join(image_path, f'fixed_samples{state_dict["itr"]}.jpg')
-        torchvision.utils.save_image(fixed_Gz.detach().float().cpu(), image_filename, nrow=int(fixed_Gz.shape[0] **0.5), normalize=True)
+            os.makedirs(image_path)
+        image_filename = os.path.join(image_path, f'fixed_samples{self.state_dict["itr"]}.jpg')
+        torchvision.utils.save_image(fixed_Gz.detach().float().cpu(), image_filename, nrow=int(fixed_Gz.shape[0] ** 0.5), normalize=True)
         
+        ims = []
+        y = torch.arange(0, 100, device='cuda')
+        for j in range(10):
+            if (z_ is not None) and hasattr(z_, 'sample_') and 100 <= z_.size(0):
+                z_.sample_()
+            else:
+                z_ = torch.randn(100, self.model_g.dim_z, device='cuda')        
+            with torch.no_grad():
+                o = self.model_g(z_[:100], self.model_g.shared(y))
+
+            ims += [o.data.cpu()]
+        
+        all_images = torch.stack(ims, 1).view(-1, ims[0].shape[1], ims[0].shape[2], ims[0].shape[3]).data.float().cpu()
+        image_filename = os.path.join(image_path, f'samples{self.state_dict["itr"]}.jpg')
+        torchvision.utils.save_image(all_images, image_filename, nrow=10, normalize=True)
         
     def run(self):
-        self.args.weights_root = f'{self.args.save_path}/weights'
-        self.args.samples_root = f'{self.args.save_path}/samples'
-        self.args.data_root = './data'
-        if not os.path.exists(self.args.weights_root):
-            os.mkdir(self.args.weights_root)
-        if not os.path.exists(self.args.samples_root):
-            os.mkdir(self.args.samples_root)
-
         self.model_g = model.Generator().to(self.device)
         self.model_d = model.Discriminator().to(self.device)
         
@@ -284,7 +298,7 @@ class BIGGANTrainer:
         self.logger.debug('Number of params in G: {} D: {}'.format(
             *[sum([p.data.nelement() for p in net.parameters()]) for net in [self.model_g, self.model_d]]))
         
-        self.state_dict = {'itr': 0, 'epoch': 0, 'best_IS': 0, 'best_FID': 999999}
+        self.state_dict = {'itr': 0, 'epoch': 0, 'best_IS': 0, 'best_FID': 999999, 'best_intra_FID': 999999}
         
         D_batch_size = self.args.batch_size * self.args.num_D_steps
         loader = self.get_data_loader(batch_size=D_batch_size)
@@ -297,6 +311,7 @@ class BIGGANTrainer:
         
         sample = functools.partial(self.sample, G=self.ema_g, z_=z_, y_=y_)
         
+        full_test_counter = 1
         for epoch in range(self.state_dict['epoch'], self.args.num_epochs):
             for i, (x, y) in enumerate(tqdm(loader, ncols=0)):
                 self.state_dict['itr'] += 1
@@ -316,6 +331,12 @@ class BIGGANTrainer:
                     self.save_and_sample(z_, y_, fixed_z, fixed_y)
 
                 if not (self.state_dict['itr'] % self.args.test_every):
-                    self.test(sample, self.metrics.get_inception_metrics)
+                    if self.args.full_test_counter and not (full_test_counter % self.args.full_test_counter):
+                        self.test(sample, full=True)
+                        full_test_counter = 1
+                    else:
+                        self.test(sample)
+                        full_test_counter += 1
+                        self.logger.debug(f'Full test remains: {self.args.full_test_counter - full_test_counter}')
             
             self.state_dict['epoch'] += 1

@@ -12,191 +12,271 @@ from model.BIGGAN import layers
 
 
 class Generator(nn.Module):
-  def __init__(self, skip_init=False):
-    super(Generator, self).__init__()
-    
-    self.dim_z = 128
-    self.bottom_width = 4
-    self.is_attention = [0]
-    self.G_shared = False
-    self.shared_dim = 0 if 0 > 0 else self.dim_z
-    self.hier = False
-    self.cross_replica = False
-    self.mybn = False
-    # 1e-12 실험
-    self.SN_eps = 1e-8
-    
-    self.in_channels = [256, 256, 256]
-    self.out_channels = [256, 256, 256]
-    self.upsample = [True, True, True]
-    self.resolution = [8, 16, 32]
-    self.attention = {2**i: (2**i in [item for item in self.is_attention]) for i in range(3,6)}
+    """
+    BigGAN의 생성기 클래스.
 
-    self.num_slots = 1
-    self.z_chunk_size = 0
+    이 클래스는 BigGAN에서 생성기 모델의 아키텍처를 정의합니다.
+    선택적인 어텐션 레이어가 있는 여러 개의 잔여 블록(GBlock)으로 구성되며,
+    마지막에 최종 이미지를 생성하는 출력 레이어가 있습니다.
 
-    self.which_conv = functools.partial(layers.SNConv2d,
-                        kernel_size=3, padding=1,
-                        num_svs=1, num_itrs=1,
-                        eps=self.SN_eps)
-    self.which_linear = functools.partial(layers.SNLinear,
-                        num_svs=1, num_itrs=1,
-                        eps=self.SN_eps)
-    self.activation = nn.ReLU(inplace=False)
-      
-    self.which_embedding = nn.Embedding
-    bn_linear = (functools.partial(self.which_linear, bias=False) if self.G_shared
-                 else self.which_embedding)
-    self.which_bn = functools.partial(layers.ccbn,
-                          which_linear=bn_linear,
-                          cross_replica=self.cross_replica,
-                          mybn=self.mybn,
-                          input_size=(self.shared_dim + self.z_chunk_size if self.G_shared
-                                      else 100))
+    속성:
+        dim_z (int): 잠재 공간의 차원 (노이즈 벡터).
+        bottom_width (int): 첫 번째 선형 레이어 후의 초기 공간 차원.
+        is_attention (list): 특정 해상도에서 어텐션을 적용할지 여부를 나타내는 리스트.
+        G_shared (bool): 공유 임베딩을 사용할지 여부를 결정하는 플래그.
+        shared_dim (int): 공유 임베딩의 차원.
+        hier (bool): 계층적 잠재 공간을 활성화할지 여부를 나타내는 플래그.
+        cross_replica (bool): 크로스 레플리카 배치 정규화를 활성화할지 여부를 나타내는 플래그.
+        mybn (bool): 사용자 정의 배치 정규화를 활성화할지 여부를 나타내는 플래그.
+        SN_eps (float): 스펙트럴 정규화의 epsilon 값.
+        in_channels (list): 각 GBlock의 입력 채널 수 리스트.
+        out_channels (list): 각 GBlock의 출력 채널 수 리스트.
+        upsample (list): 각 GBlock에서 업샘플링을 적용할지 여부를 나타내는 리스트.
+        resolution (list): 각 GBlock에 해당하는 해상도 리스트.
+        attention (dict): 특정 해상도에서 어텐션 레이어를 적용할지 여부를 나타내는 딕셔너리.
+        num_slots (int): 계층적 잠재 공간의 슬롯 수.
+        z_chunk_size (int): 계층적 잠재 공간에서 각 청크의 크기.
+        which_conv (function): 스펙트럴 정규화가 적용된 컨볼루션 레이어.
+        which_linear (function): 스펙트럴 정규화가 적용된 선형 레이어.
+        activation (nn.Module): 블록에서 사용되는 활성화 함수.
+        which_embedding (nn.Module): 임베딩 레이어.
+        which_bn (function): 배치 정규화 레이어.
+        shared (nn.Module): 공유 임베딩 레이어 또는 항등 함수.
+        linear (nn.Module): 잠재 벡터를 변환하는 첫 번째 선형 레이어.
+        blocks (nn.ModuleList): GBlocks 및 어텐션 레이어의 리스트.
+        output_layer (nn.Sequential): 이미지를 생성하는 최종 출력 레이어.
+    """
+    def __init__(self, skip_init=False):
+        super(Generator, self).__init__()
+        
+        # 잠재 공간 및 아키텍처 파라미터
+        self.dim_z = 128
+        self.bottom_width = 4
+        self.is_attention = [0]
+        self.G_shared = False
+        self.shared_dim = self.dim_z
+        self.hier = False
+        self.cross_replica = False
+        self.mybn = False
+        # 1e-12 실험
+        self.SN_eps = 1e-8
+        
+        # GBlocks를 위한 채널 구성
+        self.in_channels = [256, 256, 256]
+        self.out_channels = [256, 256, 256]
+        self.upsample = [True, True, True]
+        self.resolution = [8, 16, 32]
+        # 어텐션을 적용할 위치 결정
+        self.attention = {2**i: (2**i in [item for item in self.is_attention]) for i in range(3,6)}
 
-    self.shared = (self.which_embedding(100, self.shared_dim) if self.G_shared 
-                    else layers.identity())
-    self.linear = self.which_linear(self.dim_z // self.num_slots,
-                                    self.in_channels[0] * (self.bottom_width **2))
+        self.num_slots = 1
+        self.z_chunk_size = 0
 
-    self.blocks = []
-    for index in range(len(self.out_channels)):
-      self.blocks += [[layers.GBlock(in_channels=self.in_channels[index],
-                             out_channels=self.out_channels[index],
-                             which_conv=self.which_conv,
-                             which_bn=self.which_bn,
-                             activation=self.activation,
-                             upsample=(functools.partial(F.interpolate, scale_factor=2)
-                                       if self.upsample[index] else None))]]
-      if self.attention[self.resolution[index]]:
-        self.blocks[-1] += [layers.Attention(self.out_channels[index], self.which_conv)]
+        # 스펙트럴 정규화가 적용된 컨볼루션 및 선형 레이어 정의
+        self.which_conv = functools.partial(layers.SNConv2d,
+                            kernel_size=3, padding=1,
+                            num_svs=1, num_itrs=1,
+                            eps=self.SN_eps)
+        self.which_linear = functools.partial(layers.SNLinear,
+                            num_svs=1, num_itrs=1,
+                            eps=self.SN_eps)
+        self.activation = nn.ReLU(inplace=False)
+        
+        # 임베딩 및 배치 정규화 레이어 정의
+        self.which_embedding = nn.Embedding
+        bn_linear = (functools.partial(self.which_linear, bias=False) if self.G_shared
+                     else self.which_embedding)
+        self.which_bn = functools.partial(layers.ccbn,
+                              which_linear=bn_linear,
+                              cross_replica=self.cross_replica,
+                              mybn=self.mybn,
+                              input_size=(self.shared_dim + self.z_chunk_size if self.G_shared
+                                          else 100))
 
-    self.blocks = nn.ModuleList([nn.ModuleList(block) for block in self.blocks])
-    
-    self.output_layer = nn.Sequential(layers.bn(self.out_channels[-1],
-                                                cross_replica=self.cross_replica,
-                                                mybn=self.mybn),
-                                    self.activation,
-                                    self.which_conv(self.out_channels[-1], 3))
+        # 공유 임베딩 또는 항등 함수
+        self.shared = (self.which_embedding(100, self.shared_dim) if self.G_shared 
+                        else layers.identity())
+        # 잠재 벡터를 피처 맵으로 변환하는 첫 번째 선형 레이어
+        self.linear = self.which_linear(self.dim_z // self.num_slots,
+                                        self.in_channels[0] * (self.bottom_width **2))
 
-    if not skip_init:
-      self.init_weights()
+        # 선택적인 어텐션과 함께 GBlocks 정의
+        self.blocks = []
+        for index in range(len(self.out_channels)):
+            self.blocks += [[layers.GBlock(in_channels=self.in_channels[index],
+                                 out_channels=self.out_channels[index],
+                                 which_conv=self.which_conv,
+                                 which_bn=self.which_bn,
+                                 activation=self.activation,
+                                 upsample=(functools.partial(F.interpolate, scale_factor=2)
+                                           if self.upsample[index] else None))]]
+            if self.attention[self.resolution[index]]:
+                self.blocks[-1] += [layers.Attention(self.out_channels[index], self.which_conv)]
 
-  
-  def init_weights(self):
-    self.param_count = 0
-    for module in self.modules():
-      if (isinstance(module, nn.Conv2d) 
-          or isinstance(module, nn.Linear) 
-          or isinstance(module, nn.Embedding)):
-        init.normal_(module.weight, 0, 0.02)
-        self.param_count += sum([p.data.nelement() for p in module.parameters()])
+        # 적절한 등록을 위해 blocks를 ModuleList로 변환
+        self.blocks = nn.ModuleList([nn.ModuleList(block) for block in self.blocks])
+        
+        # 최종 출력 레이어 정의: BatchNorm -> ReLU -> Conv
+        self.output_layer = nn.Sequential(layers.bn(self.out_channels[-1],
+                                                    cross_replica=self.cross_replica,
+                                                    mybn=self.mybn),
+                                        self.activation,
+                                        self.which_conv(self.out_channels[-1], 3))
 
-  
-  def forward(self, z, y):
-    if self.hier:
-      zs = torch.split(z, self.z_chunk_size, 1)
-      z = zs[0]
-      ys = [torch.cat([y, item], 1) for item in zs[1:]]
-    else:
-      ys = [y] * len(self.blocks)
-      
-    h = self.linear(z)
-    h = h.view(h.size(0), -1, self.bottom_width, self.bottom_width)
-    
-    for index, blocklist in enumerate(self.blocks):
-      for block in blocklist:
-        h = block(h, ys[index])
-    return torch.tanh(self.output_layer(h))
+        if not skip_init:
+            self.init_weights()
+
+    def init_weights(self):
+        self.param_count = 0
+        for module in self.modules():
+            if (isinstance(module, nn.Conv2d) 
+                or isinstance(module, nn.Linear) 
+                or isinstance(module, nn.Embedding)):
+                init.normal_(module.weight, 0, 0.02)
+                self.param_count += sum([p.data.nelement() for p in module.parameters()])
+        print(f'Param count for G\'s initialized parameters: {self.param_count}')
+
+    def forward(self, z, y):
+        if self.hier:
+            # 계층적 생성을 위한 잠재 벡터 분할
+            zs = torch.split(z, self.z_chunk_size, 1)
+            z = zs[0]
+            ys = [torch.cat([y, item], 1) for item in zs[1:]]
+        else:
+            # 각 블록에 대해 레이블 텐서를 반복
+            ys = [y] * len(self.blocks)
+        
+        # 잠재 벡터를 초기 피처 맵으로 변환
+        h = self.linear(z)
+        h = h.view(h.size(0), -1, self.bottom_width, self.bottom_width)
+        
+        # GBlocks 및 어텐션 레이어를 통과
+        for index, blocklist in enumerate(self.blocks):
+            for block in blocklist:
+                h = block(h, ys[index])
+        return torch.tanh(self.output_layer(h))
 
 
 class Discriminator(nn.Module):
+    """
+    BigGAN의 판별기 클래스.
 
-  def __init__(self, skip_init=False):
-    super(Discriminator, self).__init__()
-    self.is_attention = [0]
-    # 1e-12 실험
-    self.SN_eps = 1e-8
-    
-    self.in_channels = [3, 256, 256, 256]
-    self.out_channels = [256, 256, 256, 256]
-    self.downsample = [True, True, False, False]
-    self.resolution = [16, 16, 16, 16]
-    self.attention = {2**i: 2**i in [item for item in self.is_attention] for i in range(2,6)}
-    
-    self.activation = nn.ReLU(inplace=False)
+    이 클래스는 BigGAN에서 판별기 모델의 아키텍처를 정의합니다.
+    선택적인 어텐션 레이어가 있는 여러 개의 잔여 블록(DBlock)으로 구성되며,
+    마지막에 실제/가짜 점수를 출력하는 선형 레이어가 있습니다.
 
-    self.which_conv = functools.partial(layers.SNConv2d,
-                        kernel_size=3, padding=1,
-                        num_svs=1, num_itrs=1,
-                        eps=self.SN_eps)
-    self.which_linear = functools.partial(layers.SNLinear,
-                        num_svs=1, num_itrs=1,
-                        eps=self.SN_eps)
-    self.which_embedding = functools.partial(layers.SNEmbedding,
+    속성:
+        is_attention (list): 특정 해상도에서 어텐션을 적용할지 여부를 나타내는 리스트.
+        SN_eps (float): 스펙트럴 정규화의 epsilon 값.
+        in_channels (list): 각 DBlock의 입력 채널 수 리스트.
+        out_channels (list): 각 DBlock의 출력 채널 수 리스트.
+        downsample (list): 각 DBlock에서 다운샘플링을 적용할지 여부를 나타내는 리스트.
+        resolution (list): 각 DBlock에 해당하는 해상도 리스트.
+        attention (dict): 특정 해상도에서 어텐션 레이어를 적용할지 여부를 나타내는 딕셔너리.
+        activation (nn.Module): 블록에서 사용되는 활성화 함수.
+        which_conv (function): 스펙트럴 정규화가 적용된 컨볼루션 레이어.
+        which_linear (function): 스펙트럴 정규화가 적용된 선형 레이어.
+        which_embedding (function): 스펙트럴 정규화가 적용된 임베딩 레이어.
+        blocks (nn.ModuleList): DBlocks 및 어텐션 레이어의 리스트.
+        linear (nn.Module): 판별기 점수를 생성하는 최종 선형 레이어.
+        embed (nn.Module): 프로젝션 기반 판별을 위한 임베딩 레이어.
+    """
+  
+    def __init__(self, skip_init=False):
+        super(Discriminator, self).__init__()
+        self.is_attention = [0]
+        # 1e-12 실험
+        self.SN_eps = 1e-8
+        
+        # DBlocks를 위한 채널 구성
+        self.in_channels = [3, 256, 256, 256]
+        self.out_channels = [256, 256, 256, 256]
+        self.downsample = [True, True, False, False]
+        self.resolution = [16, 16, 16, 16]
+        # 어텐션을 적용할 위치 결정
+        self.attention = {2**i: 2**i in [item for item in self.is_attention] for i in range(2,6)}
+        
+        self.activation = nn.ReLU(inplace=False)
+
+        # 스펙트럴 정규화가 적용된 컨볼루션 및 선형 레이어 정의
+        self.which_conv = functools.partial(layers.SNConv2d,
+                            kernel_size=3, padding=1,
                             num_svs=1, num_itrs=1,
                             eps=self.SN_eps)
-    
-    self.blocks = []
-    for index in range(len(self.out_channels)):
-      self.blocks += [[layers.DBlock(
-                        in_channels=self.in_channels[index],
-                        out_channels=self.out_channels[index],
-                        which_conv=self.which_conv,
-                        wide=True,
-                        activation=self.activation,
-                        preactivation=(index > 0),
-                        downsample=(nn.AvgPool2d(2) if self.downsample[index] else None))
-                      ]]
-      if self.attention[self.resolution[index]]:
-        self.blocks[-1] += [layers.Attention(self.out_channels[index], self.which_conv)]
-    
-    self.blocks = nn.ModuleList([nn.ModuleList(block) for block in self.blocks])
-    self.linear = self.which_linear(self.out_channels[-1], 1)
-    self.embed = self.which_embedding(100, self.out_channels[-1])
+        self.which_linear = functools.partial(layers.SNLinear,
+                            num_svs=1, num_itrs=1,
+                            eps=self.SN_eps)
+        self.which_embedding = functools.partial(layers.SNEmbedding,
+                                num_svs=1, num_itrs=1,
+                                eps=self.SN_eps)
+        
+        # 선택적인 어텐션과 함께 DBlocks 정의
+        self.blocks = []
+        for index in range(len(self.out_channels)):
+            self.blocks += [[layers.DBlock(
+                            in_channels=self.in_channels[index],
+                            out_channels=self.out_channels[index],
+                            which_conv=self.which_conv,
+                            wide=True,
+                            activation=self.activation,
+                            preactivation=(index > 0),
+                            downsample=(nn.AvgPool2d(2) if self.downsample[index] else None))
+                          ]]
+            if self.attention[self.resolution[index]]:
+                self.blocks[-1] += [layers.Attention(self.out_channels[index], self.which_conv)]
+        
+        # 적절한 등록을 위해 blocks를 ModuleList로 변환
+        self.blocks = nn.ModuleList([nn.ModuleList(block) for block in self.blocks])
+        # 판별기 점수를 생성하는 최종 선형 레이어
+        self.linear = self.which_linear(self.out_channels[-1], 1)
+        # 프로젝션 기반 판별을 위한 임베딩 레이어
+        self.embed = self.which_embedding(100, self.out_channels[-1])
 
-    if not skip_init:
-      self.init_weights()
+        if not skip_init:
+            self.init_weights()
 
 
-  def init_weights(self):
-    self.param_count = 0
-    for module in self.modules():
-      if (isinstance(module, nn.Conv2d) or isinstance(module, nn.Linear) or isinstance(module, nn.Embedding)):
-        init.normal_(module.weight, 0, 0.02)
-        self.param_count += sum([p.data.nelement() for p in module.parameters()])
-    print('Param count for D''s initialized parameters: %d' % self.param_count)
+    def init_weights(self):
+        self.param_count = 0
+        for module in self.modules():
+            if (isinstance(module, nn.Conv2d) or isinstance(module, nn.Linear) or isinstance(module, nn.Embedding)):
+                init.normal_(module.weight, 0, 0.02)
+                self.param_count += sum([p.data.nelement() for p in module.parameters()])
+        print('Param count for D\'s initialized parameters: %d' % self.param_count)
 
 
-  def forward(self, x, y=None):
-    h = x
-    for index, blocklist in enumerate(self.blocks):
-      for block in blocklist:
-        h = block(h)
-    h = torch.sum(self.activation(h), [2, 3])
-    
-    out = self.linear(h)
-    out = out + torch.sum(self.embed(y) * h, 1, keepdim=True)
-    
-    return out
+    def forward(self, x, y=None):
+        h = x
+        # DBlocks 및 어텐션 레이어를 통과
+        for index, blocklist in enumerate(self.blocks):
+            for block in blocklist:
+                h = block(h)
+        # 글로벌 합 풀링
+        h = torch.sum(self.activation(h), [2, 3])
+        
+        out = self.linear(h)
+        # 레이블이 제공된 경우 프로젝션 점수 추가
+        out = out + torch.sum(self.embed(y) * h, 1, keepdim=True)
+        
+        return out
 
 
 class BigGAN(nn.Module):
-  def __init__(self, G, D):
-    super(BigGAN, self).__init__()
-    self.G = G
-    self.D = D
+    def __init__(self, G, D):
+        super(BigGAN, self).__init__()
+        self.G = G
+        self.D = D
 
 
-  def forward(self, z, gy, x=None, dy=None, train_G=False):              
-    with torch.set_grad_enabled(train_G):
-      G_z = self.G(z, self.G.shared(gy))
-    
-    D_input = torch.cat([G_z, x], 0) if x is not None else G_z
-    D_class = torch.cat([gy, dy], 0) if dy is not None else gy
-    
-    D_out = self.D(D_input, D_class)
-    if x is not None:
-      return torch.split(D_out, [G_z.shape[0], x.shape[0]])
-    else:
-      return D_out
+    def forward(self, z, gy, x=None, dy=None, train_G=False):              
+        with torch.set_grad_enabled(train_G):
+            G_z = self.G(z, self.G.shared(gy))
+        
+        D_input = torch.cat([G_z, x], 0) if x is not None else G_z
+        D_class = torch.cat([gy, dy], 0) if dy is not None else gy
+        
+        D_out = self.D(D_input, D_class)
+        if x is not None:
+            return torch.split(D_out, [G_z.shape[0], x.shape[0]])
+        else:
+            return D_out

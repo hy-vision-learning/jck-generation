@@ -1,5 +1,5 @@
-''' Layers
-    This file contains various layers for the BigGAN models.
+''' 레이어
+    이 파일은 BigGAN 모델을 위한 다양한 레이어를 포함하고 있습니다.
 '''
 import numpy as np
 import torch
@@ -12,94 +12,95 @@ from torch.nn import Parameter as P
 from model.BIGGAN.sync_batchnorm import SynchronizedBatchNorm2d as SyncBN2d
 
 
-# Projection of x onto y
+# x를 y에 사영
 def proj(x, y):
   return torch.mm(y, x.t()) * y / torch.mm(y, y.t())
 
 
-# Orthogonalize x wrt list of vectors ys
+# 벡터 목록 ys에 대하여 x를 직교화
 def gram_schmidt(x, ys):
   for y in ys:
     x = x - proj(x, y)
   return x
 
 
-# Apply num_itrs steps of the power method to estimate top N singular values.
+# 파워 메소드를 num_itrs 단계 적용하여 상위 N개의 특이값을 추정
 def power_iteration(W, u_, update=True, eps=1e-12):
-  # Lists holding singular vectors and values
+  # 특이 벡터와 값을 저장할 리스트들
   us, vs, svs = [], [], []
   for i, u in enumerate(u_):
-    # Run one step of the power iteration
+    # 파워 이터레이션의 한 단계를 실행
     with torch.no_grad():
       v = torch.matmul(u, W)
-      # Run Gram-Schmidt to subtract components of all other singular vectors
+      # 모든 다른 특이 벡터의 성분을 빼기 위해 Gram-Schmidt 수행
       v = F.normalize(gram_schmidt(v, vs), eps=eps)
-      # Add to the list
+      # 리스트에 추가
       vs += [v]
-      # Update the other singular vector
+      # 다른 특이 벡터를 업데이트
       u = torch.matmul(v, W.t())
-      # Run Gram-Schmidt to subtract components of all other singular vectors
+      # 모든 다른 특이 벡터의 성분을 빼기 위해 Gram-Schmidt 수행
       u = F.normalize(gram_schmidt(u, us), eps=eps)
-      # Add to the list
+      # 리스트에 추가
       us += [u]
       if update:
         u_[i][:] = u
-    # Compute this singular value and add it to the list
+    # 이 특이값을 계산하고 리스트에 추가
     svs += [torch.squeeze(torch.matmul(torch.matmul(v, W.t()), u.t()))]
     #svs += [torch.sum(F.linear(u, W.transpose(0, 1)) * v)]
   return svs, us, vs
 
 
-# Convenience passthrough function
+# 편의를 위한 패스스루 함수
 class identity(nn.Module):
   def forward(self, input):
     return input
  
 
-# Spectral normalization base class 
+
+# 스펙트럴 정규화 기본 클래스 
 class SN(object):
   def __init__(self, num_svs, num_itrs, num_outputs, transpose=False, eps=1e-12):
-    # Number of power iterations per step
+    # 단계당 파워 이터레이션의 수
     self.num_itrs = num_itrs
-    # Number of singular values
+    # 특이값의 수
     self.num_svs = num_svs
-    # Transposed?
+    # 전치됨?
     self.transpose = transpose
-    # Epsilon value for avoiding divide-by-0
+    # 0으로 나누는 것을 방지하기 위한 epsilon 값
     self.eps = eps
-    # Register a singular vector for each sv
+    # 각 특이값에 대한 특이 벡터를 등록
     for i in range(self.num_svs):
       self.register_buffer('u%d' % i, torch.randn(1, num_outputs))
       self.register_buffer('sv%d' % i, torch.ones(1))
   
-  # Singular vectors (u side)
+  # 특이 벡터 (u 측)
   @property
   def u(self):
     return [getattr(self, 'u%d' % i) for i in range(self.num_svs)]
 
-  # Singular values; 
-  # note that these buffers are just for logging and are not used in training. 
+  # 특이값;
+  # 이 버퍼들은 로그 기록용으로만 사용되며 훈련에는 사용되지 않습니다.
   @property
   def sv(self):
    return [getattr(self, 'sv%d' % i) for i in range(self.num_svs)]
    
-  # Compute the spectrally-normalized weight
+  # 스펙트럴 정규화된 가중치를 계산
   def W_(self):
     W_mat = self.weight.view(self.weight.size(0), -1)
     if self.transpose:
       W_mat = W_mat.t()
-    # Apply num_itrs power iterations
+    # num_itrs 파워 이터레이션 적용
     for _ in range(self.num_itrs):
       svs, us, vs = power_iteration(W_mat, self.u, update=self.training, eps=self.eps) 
-    # Update the svs
+    # svs 업데이트
     if self.training:
-      with torch.no_grad(): # Make sure to do this in a no_grad() context or you'll get memory leaks!
+      with torch.no_grad(): # 이걸 no_grad() 컨텍스트에서 꼭 수행해야 메모리 누수를 방지할 수 있습니다!
         for i, sv in enumerate(svs):
           self.sv[i][:] = sv     
     return self.weight / svs[0]
-
-
-# 2D Conv layer with spectral norm
+    
+    
+# 스펙트럴 노멀라이제이션이 적용된 2D 합성곱 레이어
 class SNConv2d(nn.Conv2d, SN):
   def __init__(self, in_channels, out_channels, kernel_size, stride=1,
              padding=0, dilation=1, groups=1, bias=True, 
@@ -112,7 +113,7 @@ class SNConv2d(nn.Conv2d, SN):
                     self.padding, self.dilation, self.groups)
 
 
-# Linear layer with spectral norm
+# 스펙트럴 노멀라이제이션이 적용된 선형 레이어
 class SNLinear(nn.Linear, SN):
   def __init__(self, in_features, out_features, bias=True,
                num_svs=1, num_itrs=1, eps=1e-12):
@@ -122,9 +123,8 @@ class SNLinear(nn.Linear, SN):
     return F.linear(x, self.W_(), self.bias)
 
 
-# Embedding layer with spectral norm
-# We use num_embeddings as the dim instead of embedding_dim here
-# for convenience sake
+# 스펙트럴 노멀라이제이션이 적용된 임베딩 레이어
+# 편의를 위해 여기서는 embedding_dim 대신 num_embeddings를 차원으로 사용합니다
 class SNEmbedding(nn.Embedding, SN):
   def __init__(self, num_embeddings, embedding_dim, padding_idx=None, 
                max_norm=None, norm_type=2, scale_grad_by_freq=False,
@@ -138,9 +138,9 @@ class SNEmbedding(nn.Embedding, SN):
     return F.embedding(x, self.W_())
 
 
-# A non-local block as used in SA-GAN
-# Note that the implementation as described in the paper is largely incorrect;
-# refer to the released code for the actual implementation.
+# SA-GAN에서 사용되는 비지역 블록
+# 논문에 기술된 구현은 대체로 잘못되었음을 유의하세요;
+# 실제 구현을 위해 공개된 코드를 참조하세요.
 class Attention(nn.Module):
   def __init__(self, ch, which_conv=SNConv2d, name='attention'):
     super(Attention, self).__init__()
@@ -169,9 +169,9 @@ class Attention(nn.Module):
     return self.gamma * o + x
 
 
-# Fused batchnorm op
+# Fused batchnorm 연산
 def fused_bn(x, mean, var, gain=None, bias=None, eps=1e-5):
-  # Apply scale and shift--if gain and bias are provided, fuse them here
+  # 스케일과 시프트 적용 - 게인과 바이어스가 제공되면 여기서 융합
   # Prepare scale
   scale = torch.rsqrt(var + eps)
   # If a gain is provided, use it
@@ -366,12 +366,11 @@ class bn(nn.Module):
                           self.bias, self.training, self.momentum, self.eps)
 
                           
-# Generator blocks
-# Note that this class assumes the kernel size and padding (and any other
-# settings) have been selected in the main generator module and passed in
-# through the which_conv arg. Similar rules apply with which_bn (the input
-# size [which is actually the number of channels of the conditional info] must 
-# be preselected)
+
+# 생성기 블록
+# 이 클래스는 커널 크기와 패딩(및 기타 모든 설정)이 주 생성기 모듈에서 선택되어
+# which_conv 인자를 통해 전달되었다고 가정합니다. which_bn에 대해서도 유사한 규칙이 적용됩니다
+# (입력 크기 [실제로는 조건 정보의 채널 수]는 사전에 선택되어야 함)
 class GBlock(nn.Module):
   def __init__(self, in_channels, out_channels,
                which_conv=nn.Conv2d, which_bn=bn, activation=None, 
@@ -382,17 +381,17 @@ class GBlock(nn.Module):
     self.which_conv, self.which_bn = which_conv, which_bn
     self.activation = activation
     self.upsample = upsample
-    # Conv layers
+    # 합성곱 레이어들
     self.conv1 = self.which_conv(self.in_channels, self.out_channels)
     self.conv2 = self.which_conv(self.out_channels, self.out_channels)
     self.learnable_sc = in_channels != out_channels or upsample
     if self.learnable_sc:
       self.conv_sc = self.which_conv(in_channels, out_channels, 
                                      kernel_size=1, padding=0)
-    # Batchnorm layers
+    # 배치 정규화 레이어들
     self.bn1 = self.which_bn(in_channels)
     self.bn2 = self.which_bn(out_channels)
-    # upsample layers
+    # 업샘플 레이어들
     self.upsample = upsample
 
   def forward(self, x, y):
@@ -408,20 +407,20 @@ class GBlock(nn.Module):
     return h + x
     
     
-# Residual block for the discriminator
+# 판별기를 위한 잔여 블록
 class DBlock(nn.Module):
   def __init__(self, in_channels, out_channels, which_conv=SNConv2d, wide=True,
                preactivation=False, activation=None, downsample=None,):
     super(DBlock, self).__init__()
     self.in_channels, self.out_channels = in_channels, out_channels
-    # If using wide D (as in SA-GAN and BigGAN), change the channel pattern
+    # wide D를 사용하는 경우(SA-GAN 및 BigGAN과 같이), 채널 패턴을 변경
     self.hidden_channels = self.out_channels if wide else self.in_channels
     self.which_conv = which_conv
     self.preactivation = preactivation
     self.activation = activation
     self.downsample = downsample
         
-    # Conv layers
+    # 합성곱 레이어들
     self.conv1 = self.which_conv(self.in_channels, self.hidden_channels)
     self.conv2 = self.which_conv(self.hidden_channels, self.out_channels)
     self.learnable_sc = True if (in_channels != out_channels) or downsample else False
@@ -443,9 +442,9 @@ class DBlock(nn.Module):
     
   def forward(self, x):
     if self.preactivation:
-      # h = self.activation(x) # NOT TODAY SATAN
-      # Andy's note: This line *must* be an out-of-place ReLU or it 
-      #              will negatively affect the shortcut connection.
+      # h = self.activation(x) # 오늘은 안돼 사탄
+      # 앤디의 노트: 이 라인은 반드시 비-장소 ReLU여야 하며, 그렇지 않으면
+      #            단축 연결에 부정적인 영향을 미칩니다.
       h = F.relu(x)
     else:
       h = x    
@@ -455,5 +454,3 @@ class DBlock(nn.Module):
       h = self.downsample(h)     
         
     return h + self.shortcut(x)
-    
-# dogball

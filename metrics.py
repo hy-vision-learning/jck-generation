@@ -45,7 +45,7 @@ class Metrics:
     
     
     def get_inception_metrics(self, sample, num_inception_images, num_splits=10, full=False):
-        # self.logger.debug(f'use_torch: {use_torch}\tgenerating samples')
+        self.logger.debug(f'generating samples')
         if full:
             num_inception_images = 50000
         
@@ -62,19 +62,19 @@ class Metrics:
         
         self.logger.debug('Calculating FID')
         if not full:
-            FID = inceptionID.torch_calculate_fid(mu, sigma,
-                    torch.tensor(self.data_mu).float().cuda(), torch.tensor(self.data_sigma).float().cuda(), atol=1e-8)
-            FID = float(FID.cpu().numpy())
+            fid = inceptionID.torch_calculate_fid(mu, sigma,
+                    torch.tensor(self.data_mu).float().cuda(), torch.tensor(self.data_sigma).float().cuda(), atol=1e-7)
+            fid = float(fid.cpu().numpy())
         else:
-            FID = inceptionID.calculate_fid(mu, sigma, self.data_mu, self.data_sigma)
+            fid = inceptionID.calculate_fid(mu, sigma, self.data_mu, self.data_sigma)
         
         self.logger.debug('Calculating intra-FID')
         if full:
             intra_fids, _ = inceptionID.calculate_intra_fid(self.super_mu, self.super_sigma, g_pool, g_logits, g_labels, chage_superclass=True)
         else:
-            intra_fids, _ = inceptionID.torch_calculate_intra_fid(self.super_mu, self.super_sigma, g_pool, g_logits, g_labels, chage_superclass=True)
-        
+            intra_fids = inceptionID.torch_calculate_intra_fid(self.super_mu, self.super_sigma, g_pool, g_logits, g_labels, chage_superclass=True)
+
         del mu, sigma, g_pool, g_logits, g_labels
         
-        self.logger.debug(f'Inception Score: {IS_mean} +/- {IS_std}, FID: {FID}, Intra-FID: {intra_fids}')
-        return IS_mean, IS_std, FID, intra_fids
+        self.logger.debug(('Exact' if full else 'Approximated') + f' Inception Score: {IS_mean} +/- {IS_std}, FID: {fid}, Intra-FID: {intra_fids}')
+        return IS_mean, IS_std, fid, intra_fids

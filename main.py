@@ -56,6 +56,7 @@ def get_arg_parse():
     parser.add_argument('--G_ortho', type=float, help='Generator의 Ortho 값', default=0.0)
     parser.add_argument('--ema_start', type=int, help='EMA 시작 시점', default=1000)
     parser.add_argument('--test_every', type=int, help='테스트 주기', default=500)
+    parser.add_argument('--full_test_counter', type=int, help='5만장 전체 테스트 주기 (테스트 n번마다 한번)', default=0)
     parser.add_argument('--save_every', type=int, help='저장 주기', default=2000)
     parser.add_argument('--ema_decay', type=float, help='EMA 감쇠율', default=0.999)
     parser.add_argument('--D_ortho', type=float, help='Discriminator의 Ortho 값', default=0.0)

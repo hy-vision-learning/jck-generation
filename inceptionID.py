@@ -244,12 +244,13 @@ def calculate_inception_score(pred, num_splits=10):
   return np.mean(scores), np.std(scores)
 
 
-def calculate_intra_fid(pool, logits, labels, g_pool, g_logits, g_labels, chage_superclass=True):
+def calculate_intra_fid(super_mu, super_sigma, g_pool, g_logits, g_labels, chage_superclass=True):
+  # 5만개 원본 데이터의 superclass mean, std는 미리 계산하고 저장한 데이터를 사용하도록 수정
   intra_fids = []
   super_class = super_class_mapping()
   
-  super_labels = [super_class[i] for i in labels]
-  super_labels = np.array(super_labels)
+  # super_labels = [super_class[i] for i in labels]
+  # super_labels = np.array(super_labels)
   
   if chage_superclass:
     g_super_labels = [super_class[i] for i in g_labels]
@@ -258,27 +259,26 @@ def calculate_intra_fid(pool, logits, labels, g_pool, g_logits, g_labels, chage_
     g_super_labels = np.array(g_labels.cpu())
   
   for super_idx, _ in superclass_mapping.items():
-    mask = (super_labels == super_idx)
+    # mask = (super_labels == super_idx)
     g_mask = (g_super_labels == super_idx)
     
-    pool_low = pool[mask]
+    # pool_low = pool[mask]
     g_pool_low = g_pool[g_mask]
     
     assert 2500 == len(g_pool_low), "super-classes count error"
-    if len(pool_low) == 0 or len(g_pool_low) == 0:
-      continue
+    # if len(pool_low) == 0 or len(g_pool_low) == 0:
+    #   continue
     
     mu, sigma = np.mean(g_pool_low.cpu().numpy(), axis=0), np.cov(g_pool_low.cpu().numpy(), rowvar=False)
-    mu_data, sigma_data = np.mean(pool_low, axis=0), np.cov(pool_low, rowvar=False)
+    # mu_data, sigma_data = np.mean(pool_low, axis=0), np.cov(pool_low, rowvar=False)
     
-    fid = calculate_fid(mu, sigma, mu_data, sigma_data)
+    fid = calculate_fid(mu, sigma, super_mu[super_idx], super_sigma[super_idx])
     intra_fids.append(fid)
     
   return np.mean(intra_fids), intra_fids
 
 
 def torch_calculate_intra_fid(super_mu, super_sigma, g_pool, g_logits, g_labels, chage_superclass=True):
-  intra_fids = []
   super_class = super_class_mapping()
   
   # super_labels = [super_class[i] for i in labels]
@@ -295,7 +295,8 @@ def torch_calculate_intra_fid(super_mu, super_sigma, g_pool, g_logits, g_labels,
   
   # if use_torch:
   #   pool = torch.tensor(pool, device='cuda')
-    
+  
+  intra_fid = 0
   for super_idx, _ in superclass_mapping.items():
     # mask = (super_labels == super_idx)
     g_mask = (g_super_labels == super_idx)
@@ -312,10 +313,10 @@ def torch_calculate_intra_fid(super_mu, super_sigma, g_pool, g_logits, g_labels,
     mu, sigma = torch.mean(g_pool_low, 0), torch_cov(g_pool_low, rowvar=False)
     mu_data, sigma_data = torch.tensor(mu_data, device='cuda'), torch.tensor(sigma_data, device='cuda')
     fid = torch_calculate_fid(mu, sigma, mu_data, sigma_data, atol=5e-4)
-    fid = float(fid.cpu().numpy())
+    intra_fid += float(fid.detach().cpu().numpy())
   # print(intra_fids, np.mean(intra_fids))
     
-  return np.mean(intra_fids), intra_fids
+  return intra_fid / len(superclass_mapping.keys())
     
   
 def super_class_mapping():

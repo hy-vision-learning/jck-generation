@@ -54,22 +54,9 @@ class SlavePipe(_SlavePipeBase):
 
 
 class SyncMaster(object):
-    """An abstract `SyncMaster` object.
-
-    - During the replication, as the data parallel will trigger an callback of each module, all slave devices should
-    call `register(id)` and obtain an `SlavePipe` to communicate with the master.
-    - During the forward pass, master device invokes `run_master`, all messages from slave devices will be collected,
-    and passed to a registered callback.
-    - After receiving the messages, the master device should gather the information and determine to message passed
-    back to each slave devices.
-    """
+    """마스터-슬레이브 동기화를 관리하는 클래스."""
 
     def __init__(self, master_callback):
-        """
-
-        Args:
-            master_callback: a callback to be invoked after having collected messages from slave devices.
-        """
         self._master_callback = master_callback
         self._queue = queue.Queue()
         self._registry = collections.OrderedDict()
@@ -82,15 +69,7 @@ class SyncMaster(object):
         self.__init__(state['master_callback'])
 
     def register_slave(self, identifier):
-        """
-        Register an slave device.
-
-        Args:
-            identifier: an identifier, usually is the device id.
-
-        Returns: a `SlavePipe` object which can be used to communicate with the master device.
-
-        """
+        """슬레이브를 등록하고 SlavePipe를 반환합니다."""
         if self._activated:
             assert self._queue.empty(), 'Queue is not clean before next initialization.'
             self._activated = False
@@ -100,19 +79,7 @@ class SyncMaster(object):
         return SlavePipe(identifier, self._queue, future)
 
     def run_master(self, master_msg):
-        """
-        Main entry for the master device in each forward pass.
-        The messages were first collected from each devices (including the master device), and then
-        an callback will be invoked to compute the message to be sent back to each devices
-        (including the master device).
-
-        Args:
-            master_msg: the message that the master want to send to itself. This will be placed as the first
-            message when calling `master_callback`. For detailed usage, see `_SynchronizedBatchNorm` for an example.
-
-        Returns: the message to be sent back to the master device.
-
-        """
+        """마스터 메시지를 처리하고 슬레이브들에게 결과를 반환합니다."""
         self._activated = True
 
         intermediates = [(0, master_msg)]
@@ -134,6 +101,7 @@ class SyncMaster(object):
 
     @property
     def nr_slaves(self):
+        """등록된 슬레이브의 수를 반환합니다."""
         return len(self._registry)
     
     
@@ -173,9 +141,10 @@ def _unsqueeze_ft(tensor):
 
 _ChildMessage = collections.namedtuple('_ChildMessage', ['sum', 'ssum', 'sum_size'])
 _MasterMessage = collections.namedtuple('_MasterMessage', ['sum', 'inv_std'])
-# _MasterMessage = collections.namedtuple('_MasterMessage', ['sum', 'ssum', 'sum_size'])
 
 class _SynchronizedBatchNorm(_BatchNorm):
+    """동기화된 배치 정규화의 기본 클래스."""
+
     def __init__(self, num_features, eps=1e-5, momentum=0.1, affine=True):
         super(_SynchronizedBatchNorm, self).__init__(num_features, eps=eps, momentum=momentum, affine=affine)
 
@@ -186,7 +155,7 @@ class _SynchronizedBatchNorm(_BatchNorm):
         self._slave_pipe = None
 
     def forward(self, input, gain=None, bias=None):
-        # If it is not parallel computation or is in evaluation mode, use PyTorch's implementation.
+        """입력에 대한 순전파 연산을 수행합니다."""
         if not (self._is_parallel and self.training):
             out = F.batch_norm(
                 input, self.running_mean, self.running_var, self.weight, self.bias,
@@ -196,50 +165,23 @@ class _SynchronizedBatchNorm(_BatchNorm):
             if bias is not None:
               out = out + bias
             return out
-
-        # Resize the input to (B, C, -1).
+        
         input_shape = input.size()
-        # print(input_shape)
         input = input.view(input.size(0), input.size(1), -1)
 
-        # Compute the sum and square-sum.
+        
         sum_size = input.size(0) * input.size(2)
         input_sum = _sum_ft(input)
         input_ssum = _sum_ft(input ** 2)
-        # Reduce-and-broadcast the statistics.
-        # print('it begins')
+        
         if self._parallel_id == 0:
             mean, inv_std = self._sync_master.run_master(_ChildMessage(input_sum, input_ssum, sum_size))
         else:
             mean, inv_std = self._slave_pipe.run_slave(_ChildMessage(input_sum, input_ssum, sum_size))
-        # if self._parallel_id == 0:
-            # # print('here')
-            # sum, ssum, num = self._sync_master.run_master(_ChildMessage(input_sum, input_ssum, sum_size))
-        # else:
-            # # print('there')
-            # sum, ssum, num = self._slave_pipe.run_slave(_ChildMessage(input_sum, input_ssum, sum_size))
-        
-        # print('how2')
-        # num = sum_size
-        # print('Sum: %f, ssum: %f, sumsize: %f, insum: %f' %(float(sum.sum().cpu()), float(ssum.sum().cpu()), float(sum_size), float(input_sum.sum().cpu()))) 
-        # Fix the graph
-        # sum = (sum.detach() - input_sum.detach()) + input_sum
-        # ssum = (ssum.detach() - input_ssum.detach()) + input_ssum
-        
-        # mean = sum / num
-        # var = ssum / num - mean ** 2
-        # # var = (ssum - mean * sum) / num
-        # inv_std = torch.rsqrt(var + self.eps)
-        
-        # Compute the output.
+            
         if gain is not None:
-          # print('gaining')
-          # scale = _unsqueeze_ft(inv_std) * gain.squeeze(-1)
-          # shift = _unsqueeze_ft(mean) * scale - bias.squeeze(-1)
-          # output = input * scale - shift
           output = (input - _unsqueeze_ft(mean)) * (_unsqueeze_ft(inv_std) * gain.squeeze(-1)) + bias.squeeze(-1)
         elif self.affine:
-            # MJY:: Fuse the multiplication for speed.
             output = (input - _unsqueeze_ft(mean)) * _unsqueeze_ft(inv_std * self.weight) + _unsqueeze_ft(self.bias)        
         else:
             output = (input - _unsqueeze_ft(mean)) * _unsqueeze_ft(inv_std)
@@ -248,20 +190,17 @@ class _SynchronizedBatchNorm(_BatchNorm):
         return output.view(input_shape)
 
     def __data_parallel_replicate__(self, ctx, copy_id):
+        """데이터 병렬 처리를 위한 복제 설정을 수행합니다."""
         self._is_parallel = True
         self._parallel_id = copy_id
 
-        # parallel_id == 0 means master device.
         if self._parallel_id == 0:
             ctx.sync_master = self._sync_master
         else:
             self._slave_pipe = ctx.sync_master.register_slave(copy_id)
 
     def _data_parallel_master(self, intermediates):
-        """Reduce the sum and square-sum, compute the statistics, and broadcast it."""
-
-        # Always using same "device order" makes the ReduceAdd operation faster.
-        # Thanks to:: Tete Xiao (http://tetexiao.com/)
+        """마스터에서 슬레이브로부터 받은 중간 결과를 처리합니다."""
         intermediates = sorted(intermediates, key=lambda i: i[1].sum.get_device())
 
         to_reduce = [i[1][:2] for i in intermediates]
@@ -273,20 +212,14 @@ class _SynchronizedBatchNorm(_BatchNorm):
         mean, inv_std = self._compute_mean_std(sum_, ssum, sum_size)
 
         broadcasted = Broadcast.apply(target_gpus, mean, inv_std)
-        # print('a')
-        # print(type(sum_), type(ssum), type(sum_size), sum_.shape, ssum.shape, sum_size)
-        # broadcasted = Broadcast.apply(target_gpus, sum_, ssum, torch.tensor(sum_size).float().to(sum_.device))
-        # print('b')
+        
         outputs = []
         for i, rec in enumerate(intermediates):
             outputs.append((rec[0], _MasterMessage(*broadcasted[i*2:i*2+2])))
-            # outputs.append((rec[0], _MasterMessage(*broadcasted[i*3:i*3+3])))
 
         return outputs
 
     def _compute_mean_std(self, sum_, ssum, size):
-        """Compute the mean and standard-deviation with sum and square-sum. This method
-        also maintains the moving average on the master device."""
         assert size > 1, 'BatchNorm computes unbiased standard-deviation, which requires size > 1.'
         mean = sum_ / size
         sumvar = ssum - sum_ * mean
@@ -300,62 +233,10 @@ class _SynchronizedBatchNorm(_BatchNorm):
 
 
 class SynchronizedBatchNorm1d(_SynchronizedBatchNorm):
-    r"""Applies Synchronized Batch Normalization over a 2d or 3d input that is seen as a
-    mini-batch.
-
-    .. math::
-
-        y = \frac{x - mean[x]}{ \sqrt{Var[x] + \epsilon}} * gamma + beta
-
-    This module differs from the built-in PyTorch BatchNorm1d as the mean and
-    standard-deviation are reduced across all devices during training.
-
-    For example, when one uses `nn.DataParallel` to wrap the network during
-    training, PyTorch's implementation normalize the tensor on each device using
-    the statistics only on that device, which accelerated the computation and
-    is also easy to implement, but the statistics might be inaccurate.
-    Instead, in this synchronized version, the statistics will be computed
-    over all training samples distributed on multiple devices.
-
-    Note that, for one-GPU or CPU-only case, this module behaves exactly same
-    as the built-in PyTorch implementation.
-
-    The mean and standard-deviation are calculated per-dimension over
-    the mini-batches and gamma and beta are learnable parameter vectors
-    of size C (where C is the input size).
-
-    During training, this layer keeps a running estimate of its computed mean
-    and variance. The running sum is kept with a default momentum of 0.1.
-
-    During evaluation, this running mean/variance is used for normalization.
-
-    Because the BatchNorm is done over the `C` dimension, computing statistics
-    on `(N, L)` slices, it's common terminology to call this Temporal BatchNorm
-
-    Args:
-        num_features: num_features from an expected input of size
-            `batch_size x num_features [x width]`
-        eps: a value added to the denominator for numerical stability.
-            Default: 1e-5
-        momentum: the value used for the running_mean and running_var
-            computation. Default: 0.1
-        affine: a boolean value that when set to ``True``, gives the layer learnable
-            affine parameters. Default: ``True``
-
-    Shape:
-        - Input: :math:`(N, C)` or :math:`(N, C, L)`
-        - Output: :math:`(N, C)` or :math:`(N, C, L)` (same shape as input)
-
-    Examples:
-        >>> # With Learnable Parameters
-        >>> m = SynchronizedBatchNorm1d(100)
-        >>> # Without Learnable Parameters
-        >>> m = SynchronizedBatchNorm1d(100, affine=False)
-        >>> input = torch.autograd.Variable(torch.randn(20, 100))
-        >>> output = m(input)
-    """
+    """1차원 입력을 위한 동기화된 배치 정규화."""
 
     def _check_input_dim(self, input):
+        """입력 차원을 확인합니다."""
         if input.dim() != 2 and input.dim() != 3:
             raise ValueError('expected 2D or 3D input (got {}D input)'
                              .format(input.dim()))
@@ -363,62 +244,10 @@ class SynchronizedBatchNorm1d(_SynchronizedBatchNorm):
 
 
 class SynchronizedBatchNorm2d(_SynchronizedBatchNorm):
-    r"""Applies Batch Normalization over a 4d input that is seen as a mini-batch
-    of 3d inputs
-
-    .. math::
-
-        y = \frac{x - mean[x]}{ \sqrt{Var[x] + \epsilon}} * gamma + beta
-
-    This module differs from the built-in PyTorch BatchNorm2d as the mean and
-    standard-deviation are reduced across all devices during training.
-
-    For example, when one uses `nn.DataParallel` to wrap the network during
-    training, PyTorch's implementation normalize the tensor on each device using
-    the statistics only on that device, which accelerated the computation and
-    is also easy to implement, but the statistics might be inaccurate.
-    Instead, in this synchronized version, the statistics will be computed
-    over all training samples distributed on multiple devices.
-
-    Note that, for one-GPU or CPU-only case, this module behaves exactly same
-    as the built-in PyTorch implementation.
-
-    The mean and standard-deviation are calculated per-dimension over
-    the mini-batches and gamma and beta are learnable parameter vectors
-    of size C (where C is the input size).
-
-    During training, this layer keeps a running estimate of its computed mean
-    and variance. The running sum is kept with a default momentum of 0.1.
-
-    During evaluation, this running mean/variance is used for normalization.
-
-    Because the BatchNorm is done over the `C` dimension, computing statistics
-    on `(N, H, W)` slices, it's common terminology to call this Spatial BatchNorm
-
-    Args:
-        num_features: num_features from an expected input of
-            size batch_size x num_features x height x width
-        eps: a value added to the denominator for numerical stability.
-            Default: 1e-5
-        momentum: the value used for the running_mean and running_var
-            computation. Default: 0.1
-        affine: a boolean value that when set to ``True``, gives the layer learnable
-            affine parameters. Default: ``True``
-
-    Shape:
-        - Input: :math:`(N, C, H, W)`
-        - Output: :math:`(N, C, H, W)` (same shape as input)
-
-    Examples:
-        >>> # With Learnable Parameters
-        >>> m = SynchronizedBatchNorm2d(100)
-        >>> # Without Learnable Parameters
-        >>> m = SynchronizedBatchNorm2d(100, affine=False)
-        >>> input = torch.autograd.Variable(torch.randn(20, 100, 35, 45))
-        >>> output = m(input)
-    """
+    """2차원 입력을 위한 동기화된 배치 정규화."""
 
     def _check_input_dim(self, input):
+        """입력 차원을 확인합니다."""
         if input.dim() != 4:
             raise ValueError('expected 4D input (got {}D input)'
                              .format(input.dim()))
@@ -426,151 +255,12 @@ class SynchronizedBatchNorm2d(_SynchronizedBatchNorm):
 
 
 class SynchronizedBatchNorm3d(_SynchronizedBatchNorm):
-    r"""Applies Batch Normalization over a 5d input that is seen as a mini-batch
-    of 4d inputs
-
-    .. math::
-
-        y = \frac{x - mean[x]}{ \sqrt{Var[x] + \epsilon}} * gamma + beta
-
-    This module differs from the built-in PyTorch BatchNorm3d as the mean and
-    standard-deviation are reduced across all devices during training.
-
-    For example, when one uses `nn.DataParallel` to wrap the network during
-    training, PyTorch's implementation normalize the tensor on each device using
-    the statistics only on that device, which accelerated the computation and
-    is also easy to implement, but the statistics might be inaccurate.
-    Instead, in this synchronized version, the statistics will be computed
-    over all training samples distributed on multiple devices.
-
-    Note that, for one-GPU or CPU-only case, this module behaves exactly same
-    as the built-in PyTorch implementation.
-
-    The mean and standard-deviation are calculated per-dimension over
-    the mini-batches and gamma and beta are learnable parameter vectors
-    of size C (where C is the input size).
-
-    During training, this layer keeps a running estimate of its computed mean
-    and variance. The running sum is kept with a default momentum of 0.1.
-
-    During evaluation, this running mean/variance is used for normalization.
-
-    Because the BatchNorm is done over the `C` dimension, computing statistics
-    on `(N, D, H, W)` slices, it's common terminology to call this Volumetric BatchNorm
-    or Spatio-temporal BatchNorm
-
-    Args:
-        num_features: num_features from an expected input of
-            size batch_size x num_features x depth x height x width
-        eps: a value added to the denominator for numerical stability.
-            Default: 1e-5
-        momentum: the value used for the running_mean and running_var
-            computation. Default: 0.1
-        affine: a boolean value that when set to ``True``, gives the layer learnable
-            affine parameters. Default: ``True``
-
-    Shape:
-        - Input: :math:`(N, C, D, H, W)`
-        - Output: :math:`(N, C, D, H, W)` (same shape as input)
-
-    Examples:
-        >>> # With Learnable Parameters
-        >>> m = SynchronizedBatchNorm3d(100)
-        >>> # Without Learnable Parameters
-        >>> m = SynchronizedBatchNorm3d(100, affine=False)
-        >>> input = torch.autograd.Variable(torch.randn(20, 100, 35, 45, 10))
-        >>> output = m(input)
-    """
+    """3차원 입력을 위한 동기화된 배치 정규화."""
 
     def _check_input_dim(self, input):
+        """입력 차원을 확인합니다."""
         if input.dim() != 5:
             raise ValueError('expected 5D input (got {}D input)'
                              .format(input.dim()))
         super(SynchronizedBatchNorm3d, self)._check_input_dim(input)
         
-        
-        
-import functools
-
-from torch.nn.parallel.data_parallel import DataParallel
-
-__all__ = [
-    'CallbackContext',
-    'execute_replication_callbacks',
-    'DataParallelWithCallback',
-    'patch_replication_callback'
-]
-
-
-class CallbackContext(object):
-    pass
-
-
-def execute_replication_callbacks(modules):
-    """
-    Execute an replication callback `__data_parallel_replicate__` on each module created by original replication.
-
-    The callback will be invoked with arguments `__data_parallel_replicate__(ctx, copy_id)`
-
-    Note that, as all modules are isomorphism, we assign each sub-module with a context
-    (shared among multiple copies of this module on different devices).
-    Through this context, different copies can share some information.
-
-    We guarantee that the callback on the master copy (the first copy) will be called ahead of calling the callback
-    of any slave copies.
-    """
-    master_copy = modules[0]
-    nr_modules = len(list(master_copy.modules()))
-    ctxs = [CallbackContext() for _ in range(nr_modules)]
-
-    for i, module in enumerate(modules):
-        for j, m in enumerate(module.modules()):
-            if hasattr(m, '__data_parallel_replicate__'):
-                m.__data_parallel_replicate__(ctxs[j], i)
-
-
-class DataParallelWithCallback(DataParallel):
-    """
-    Data Parallel with a replication callback.
-
-    An replication callback `__data_parallel_replicate__` of each module will be invoked after being created by
-    original `replicate` function.
-    The callback will be invoked with arguments `__data_parallel_replicate__(ctx, copy_id)`
-
-    Examples:
-        > sync_bn = SynchronizedBatchNorm1d(10, eps=1e-5, affine=False)
-        > sync_bn = DataParallelWithCallback(sync_bn, device_ids=[0, 1])
-        # sync_bn.__data_parallel_replicate__ will be invoked.
-    """
-
-    def replicate(self, module, device_ids):
-        modules = super(DataParallelWithCallback, self).replicate(module, device_ids)
-        execute_replication_callbacks(modules)
-        return modules
-
-
-def patch_replication_callback(data_parallel):
-    """
-    Monkey-patch an existing `DataParallel` object. Add the replication callback.
-    Useful when you have customized `DataParallel` implementation.
-
-    Examples:
-        > sync_bn = SynchronizedBatchNorm1d(10, eps=1e-5, affine=False)
-        > sync_bn = DataParallel(sync_bn, device_ids=[0, 1])
-        > patch_replication_callback(sync_bn)
-        # this is equivalent to
-        > sync_bn = SynchronizedBatchNorm1d(10, eps=1e-5, affine=False)
-        > sync_bn = DataParallelWithCallback(sync_bn, device_ids=[0, 1])
-    """
-
-    assert isinstance(data_parallel, DataParallel)
-
-    old_replicate = data_parallel.replicate
-
-    @functools.wraps(old_replicate)
-    def new_replicate(module, device_ids):
-        modules = old_replicate(module, device_ids)
-        execute_replication_callbacks(modules)
-        return modules
-
-    data_parallel.replicate = new_replicate
