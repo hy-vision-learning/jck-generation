@@ -112,11 +112,16 @@ def get_net_output(train_loader, net,device):
 
 
 
-def accumulate_inception_activations(sample, net, num_inception_images=50000, batch_size=50):
+def accumulate_inception_activations(sample, net, num_inception_images=50000, batch_size=50, superclass=False):
   pool, logits, labels = [], [], []
   
-  count = num_inception_images // 100
-  assert num_inception_images % 100 == 0, "num_inception_images must be divisible by 100"
+  if superclass:
+    num_classes = 20
+  else:
+    num_classes = 100
+  
+  count = num_inception_images // num_classes
+  assert num_inception_images % num_classes == 0, f"num_inception_images must be divisible by {num_classes}"
   balanced_labels = []
   for i in range(100):
     balanced_labels.extend([i] * count)

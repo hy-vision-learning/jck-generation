@@ -61,8 +61,11 @@ def get_arg_parse():
     parser.add_argument('--ema_decay', type=float, help='EMA 감쇠율', default=0.999)
     parser.add_argument('--D_ortho', type=float, help='Discriminator의 Ortho 값', default=0.0)
     parser.add_argument('--num_inception_images', type=int, help='인셉션 메트릭 계산 샘플 수', default=10000)
+    parser.add_argument('--superclass', type=int, help='lable superclass 적용 여부', default=1)
     
     args = parser.parse_args()
+    
+    args.superclass = args.superclass == 1
     
     return args
 

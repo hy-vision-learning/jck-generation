@@ -44,12 +44,12 @@ class Metrics:
         return inceptionID.load_inception_net()
     
     
-    def get_inception_metrics(self, sample, num_inception_images, num_splits=10, full=False):
+    def get_inception_metrics(self, sample, num_inception_images, num_splits=10, full=False, superclass=False):
         self.logger.debug(f'generating samples')
         if full:
             num_inception_images = 50000
         
-        g_pool, g_logits, g_labels = inceptionID.accumulate_inception_activations(sample, self.net, num_inception_images, batch_size=self.args.batch_size)
+        g_pool, g_logits, g_labels = inceptionID.accumulate_inception_activations(sample, self.net, num_inception_images, batch_size=self.args.batch_size, superclass=superclass)
         
         self.logger.debug('Calculating Inception Score')
         IS_mean, IS_std = inceptionID.calculate_inception_score(g_logits.cpu().numpy(), num_splits)
@@ -70,9 +70,9 @@ class Metrics:
         
         self.logger.debug('Calculating intra-FID')
         if full:
-            intra_fids, _ = inceptionID.calculate_intra_fid(self.super_mu, self.super_sigma, g_pool, g_logits, g_labels, chage_superclass=True)
+            intra_fids, _ = inceptionID.calculate_intra_fid(self.super_mu, self.super_sigma, g_pool, g_logits, g_labels, chage_superclass=not superclass)
         else:
-            intra_fids = inceptionID.torch_calculate_intra_fid(self.super_mu, self.super_sigma, g_pool, g_logits, g_labels, chage_superclass=True)
+            intra_fids = inceptionID.torch_calculate_intra_fid(self.super_mu, self.super_sigma, g_pool, g_logits, g_labels, chage_superclass=not superclass)
 
         del mu, sigma, g_pool, g_logits, g_labels
         

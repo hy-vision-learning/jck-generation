@@ -46,7 +46,7 @@ class Generator(nn.Module):
         blocks (nn.ModuleList): GBlocks 및 어텐션 레이어의 리스트.
         output_layer (nn.Sequential): 이미지를 생성하는 최종 출력 레이어.
     """
-    def __init__(self, skip_init=False):
+    def __init__(self, skip_init=False, n_classes=100):
         super(Generator, self).__init__()
         
         # 잠재 공간 및 아키텍처 파라미터
@@ -60,6 +60,7 @@ class Generator(nn.Module):
         self.mybn = False
         # 1e-12 실험
         self.SN_eps = 1e-8
+        self.n_classes = n_classes
         
         # GBlocks를 위한 채널 구성
         self.in_channels = [256, 256, 256]
@@ -90,11 +91,10 @@ class Generator(nn.Module):
                               which_linear=bn_linear,
                               cross_replica=self.cross_replica,
                               mybn=self.mybn,
-                              input_size=(self.shared_dim + self.z_chunk_size if self.G_shared
-                                          else 100))
+                              input_size=(self.shared_dim + self.z_chunk_size if self.G_shared else self.n_classes))
 
         # 공유 임베딩 또는 항등 함수
-        self.shared = (self.which_embedding(100, self.shared_dim) if self.G_shared 
+        self.shared = (self.which_embedding(self.n_classes, self.shared_dim) if self.G_shared 
                         else layers.identity())
         # 잠재 벡터를 피처 맵으로 변환하는 첫 번째 선형 레이어
         self.linear = self.which_linear(self.dim_z // self.num_slots,
@@ -182,11 +182,12 @@ class Discriminator(nn.Module):
         embed (nn.Module): 프로젝션 기반 판별을 위한 임베딩 레이어.
     """
   
-    def __init__(self, skip_init=False):
+    def __init__(self, skip_init=False, n_classes=100):
         super(Discriminator, self).__init__()
         self.is_attention = [0]
         # 1e-12 실험
         self.SN_eps = 1e-8
+        self.n_classes = n_classes
         
         # DBlocks를 위한 채널 구성
         self.in_channels = [3, 256, 256, 256]
@@ -230,7 +231,7 @@ class Discriminator(nn.Module):
         # 판별기 점수를 생성하는 최종 선형 레이어
         self.linear = self.which_linear(self.out_channels[-1], 1)
         # 프로젝션 기반 판별을 위한 임베딩 레이어
-        self.embed = self.which_embedding(100, self.out_channels[-1])
+        self.embed = self.which_embedding(self.n_classes, self.out_channels[-1])
 
         if not skip_init:
             self.init_weights()

@@ -42,6 +42,8 @@ import torchvision
 import model.BIGGAN.BIGGAN as model
 from datetime import datetime
 
+import inceptionID
+
 
 class EMA(object):
     def __init__(self, source, target, decay=0.9999, start_itr=0):
@@ -98,6 +100,8 @@ class BIGGANTrainer:
         self.device = get_default_device()
         self.logger = MainLogger(self.args)
         self.metrics = Metrics(self.args)
+        self.args.num_classes = 20 if self.args.superclass else 100
+        self.superclass_mapping = inceptionID.super_class_mapping()
         
     
     def get_data_loader(self, batch_size):
@@ -105,6 +109,10 @@ class BIGGANTrainer:
                         transforms.ToTensor(),
                         transforms.Normalize([0.5,0.5,0.5], [0.5,0.5,0.5])
                     ]))
+        
+        if self.args.superclass:
+            train_set.targets = [self.superclass_mapping[label] for label in train_set.targets]
+        
         train_loader = DataLoader(train_set, batch_size=batch_size,  shuffle=True,
                                   drop_last=True, pin_memory=True, num_workers=self.args.num_workers)
         return train_loader
@@ -234,7 +242,7 @@ class BIGGANTrainer:
     
     def test(self, sample, full=False):
         self.logger.debug(f'full test: {full}')
-        IS_mean, IS_std, FID, intra_FID = self.metrics.get_inception_metrics(sample, self.args.num_inception_images, num_splits=10, full=full)
+        IS_mean, IS_std, FID, intra_FID = self.metrics.get_inception_metrics(sample, self.args.num_inception_images, num_splits=10, full=full, superclass=self.args.superclass)
         if not full:
             self.logger.debug(f'Saved metrics: IS: {self.state_dict["best_IS"]}, FID: {self.state_dict["best_FID"]}, intra-FID: {self.state_dict["best_intra_FID"]}')
             return
@@ -267,14 +275,11 @@ class BIGGANTrainer:
         torchvision.utils.save_image(fixed_Gz.detach().float().cpu(), image_filename, nrow=int(fixed_Gz.shape[0] ** 0.5), normalize=True)
         
         ims = []
-        y = torch.arange(0, 100, device='cuda')
+        y = torch.arange(0, self.args.num_classes, device='cuda')
         for j in range(10):
-            if (z_ is not None) and hasattr(z_, 'sample_') and 100 <= z_.size(0):
-                z_.sample_()
-            else:
-                z_ = torch.randn(100, self.model_g.dim_z, device='cuda')        
+            z_ = torch.randn(self.args.num_classes, self.model_g.dim_z, device='cuda')        
             with torch.no_grad():
-                o = self.model_g(z_[:100], self.model_g.shared(y))
+                o = self.model_g(z_, self.model_g.shared(y))
 
             ims += [o.data.cpu()]
         
@@ -303,8 +308,8 @@ class BIGGANTrainer:
         D_batch_size = self.args.batch_size * self.args.num_D_steps
         loader = self.get_data_loader(batch_size=D_batch_size)
 
-        z_, y_ = self.prepare_z_y(self.args.batch_size, self.model_g.dim_z, 100)
-        fixed_z, fixed_y = self.prepare_z_y(self.args.batch_size, self.model_g.dim_z, 100)  
+        z_, y_ = self.prepare_z_y(self.args.batch_size, self.model_g.dim_z, self.args.num_classes)
+        fixed_z, fixed_y = self.prepare_z_y(self.args.batch_size, self.model_g.dim_z, self.args.num_classes)  
         
         fixed_z.sample_()
         fixed_y.sample_()
