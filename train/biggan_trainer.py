@@ -206,11 +206,13 @@ class BIGGANTrainer:
             
             z_.sample_()
             y_.sample_()
-            D_fake, D_real = self.biggan(z_[:self.args.batch_size], y_[:self.args.batch_size], 
-                                x[counter], y[counter], train_G=False)
+            D_fake, D_real, quant_loss_real, quant_loss_fake, ppl \
+                = self.biggan(z_[:self.args.batch_size], y_[:self.args.batch_size], x[counter], y[counter], train_G=False)
             
             D_loss_real, D_loss_fake = self.loss_hinge_dis(D_fake, D_real)
-            D_loss = (D_loss_real + D_loss_fake)
+            D_loss_real += quant_loss_real.mean()
+            D_loss_fake += quant_loss_fake.mean()
+            D_loss = D_loss_real + D_loss_fake
             D_loss.backward()
             counter += 1
             
@@ -226,8 +228,8 @@ class BIGGANTrainer:
           
         z_.sample_()
         y_.sample_()
-        D_fake = self.biggan(z_, y_, train_G=True)
-        G_loss = self.loss_hinge_gen(D_fake)
+        D_fake, quant_loss_G = self.biggan(z_, y_, train_G=True)
+        G_loss = self.loss_hinge_gen(D_fake) + quant_loss_G.mean()
         G_loss.backward()
         
         if self.args.G_ortho > 0.0:
@@ -237,7 +239,8 @@ class BIGGANTrainer:
         
         self.ema.update(self.state_dict['itr'])
         
-        return float(G_loss.item()), float(D_loss_real.item()), float(D_loss_fake.item())
+        return float(G_loss.item()), float(D_loss_real.item()), float(D_loss_fake.item()), \
+            float(quant_loss_G.mean().item()), float(ppl.mean().item())
     
     
     def test(self, sample, full=False):
@@ -288,13 +291,18 @@ class BIGGANTrainer:
         torchvision.utils.save_image(all_images, image_filename, nrow=10, normalize=True)
         
     def run(self):
-        self.model_g = model.Generator().to(self.device)
-        self.model_d = model.Discriminator().to(self.device)
+        self.model_g = model.Generator(n_classes=self.args.num_classes).to(self.device)
+        self.model_d = model.Discriminator(
+            n_classes=self.args.num_classes, 
+            dict_size=self.args.dict_size, 
+            dict_decay=self.args.dict_decay, 
+            commitment=self.args.commitment
+        ).to(self.device)
         
         self.optim_g = optim.Adam(params=self.model_g.parameters(), lr=2e-4, betas=(0.0, 0.999))
         self.optim_d = optim.Adam(params=self.model_d.parameters(), lr=2e-4, betas=(0.0, 0.999))
         
-        self.ema_g = model.Generator(skip_init=True).to(self.device)
+        self.ema_g = model.Generator(skip_init=True, n_classes=self.args.num_classes).to(self.device)
         self.ema = EMA(self.model_g, self.ema_g, self.args.ema_decay, self.args.ema_start)
         
         self.biggan = model.BigGAN(self.model_g, self.model_d)
@@ -326,11 +334,13 @@ class BIGGANTrainer:
                 self.ema_g.train()
                 
                 x, y = x.to(self.device), y.to(self.device)
-                G_loss, D_loss_real, D_loss_fake = self.train(x, y, z_, y_)
+                G_loss, D_loss_real, D_loss_fake, quant_loss_G, ppl \
+                    = self.train(x, y, z_, y_)
                 
                 if not (self.state_dict['itr'] % 100): 
                     self.logger.debug(f'itr: {self.state_dict["itr"]}\tG_loss: {G_loss:.4f}\t' + 
-                                      f'D_loss_real: {D_loss_real:.4f}\tD_loss_fake: {D_loss_fake:.4f}')
+                                      f'D_loss_real: {D_loss_real:.4f}\tD_loss_fake: {D_loss_fake:.4f}\t' + 
+                                      f'quant_loss_G: {quant_loss_G:.4f}\tppl: {ppl:.4f}')
                 
                 if not (self.state_dict['itr'] % self.args.save_every):
                     self.save_and_sample(z_, y_, fixed_z, fixed_y)

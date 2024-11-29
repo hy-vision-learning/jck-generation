@@ -11,6 +11,60 @@ from torch.nn import Parameter as P
 from model.BIGGAN import layers
 
 
+class Quantize(nn.Module):
+	def __init__(self, dim, n_embed, commitment=1.0, decay=0.8, eps=1e-5):
+		super().__init__()
+
+		self.dim = dim
+		self.n_embed = n_embed
+		self.decay = decay
+		self.eps = eps
+		self.commitment = commitment
+
+		embed = torch.randn(dim, n_embed)
+		self.register_buffer('embed', embed)
+		self.register_buffer('cluster_size', torch.zeros(n_embed))
+		self.register_buffer('embed_avg', embed.clone())
+
+	def forward(self, x, y=None):
+		x = x.permute(0, 2, 3, 1).contiguous()
+		input_shape = x.shape
+		flatten = x.reshape(-1, self.dim)
+		dist = (
+		    flatten.pow(2).sum(1, keepdim=True)
+		    - 2 * flatten @ self.embed
+		    + self.embed.pow(2).sum(0, keepdim=True)
+		)
+		_, embed_ind = (-dist).max(1)
+		embed_onehot = F.one_hot(embed_ind, self.n_embed).type(flatten.dtype)
+		embed_ind = embed_ind.view(*x.shape[:-1])
+		quantize = self.embed_code(embed_ind).view(input_shape)
+
+		if self.training:
+			self.cluster_size.data.mul_(self.decay).add_(
+			    1 - self.decay, embed_onehot.sum(0)
+			)
+			embed_sum = flatten.transpose(0, 1) @ embed_onehot
+			self.embed_avg.data.mul_(self.decay).add_(1 - self.decay, embed_sum)
+			n = self.cluster_size.sum()
+			cluster_size = (
+			    (self.cluster_size + self.eps) / (n + self.n_embed * self.eps) * n
+			)
+			embed_normalized = self.embed_avg / cluster_size.unsqueeze(0)
+			self.embed.data.copy_(embed_normalized)
+
+		diff = self.commitment*torch.mean(torch.mean((quantize.detach() - x).pow(2), dim=(1,2)),
+		                                  dim=(1,), keepdim=True)
+		quantize = x + (quantize - x).detach()
+		avg_probs = torch.mean(embed_onehot, 0)
+		perplexity = torch.exp(- torch.sum(avg_probs * torch.log(avg_probs + 1e-10)))
+
+		return quantize.permute(0, 3, 1, 2).contiguous(), diff, perplexity
+
+	def embed_code(self, embed_id):
+		return F.embedding(embed_id, self.embed.transpose(0, 1))
+
+
 class Generator(nn.Module):
     """
     BigGAN의 생성기 클래스.
@@ -182,7 +236,8 @@ class Discriminator(nn.Module):
         embed (nn.Module): 프로젝션 기반 판별을 위한 임베딩 레이어.
     """
   
-    def __init__(self, skip_init=False, n_classes=100):
+    def __init__(self, skip_init=False, n_classes=100,
+                 dict_size=10, dict_decay=0.8, commitment=0.5):
         super(Discriminator, self).__init__()
         self.is_attention = [0]
         # 1e-12 실험
@@ -213,6 +268,7 @@ class Discriminator(nn.Module):
         
         # 선택적인 어텐션과 함께 DBlocks 정의
         self.blocks = []
+        self.quant_layer = [0, 1, 2, 3]
         for index in range(len(self.out_channels)):
             self.blocks += [[layers.DBlock(
                             in_channels=self.in_channels[index],
@@ -223,6 +279,8 @@ class Discriminator(nn.Module):
                             preactivation=(index > 0),
                             downsample=(nn.AvgPool2d(2) if self.downsample[index] else None))
                           ]]
+            if index in self.quant_layer:
+                self.blocks[-1] += [Quantize(self.out_channels[index], 2 ** dict_size, commitment=commitment, decay=dict_decay)]
             if self.attention[self.resolution[index]]:
                 self.blocks[-1] += [layers.Attention(self.out_channels[index], self.which_conv)]
         
@@ -248,10 +306,18 @@ class Discriminator(nn.Module):
 
     def forward(self, x, y=None):
         h = x
+        quant_loss = 0
         # DBlocks 및 어텐션 레이어를 통과
         for index, blocklist in enumerate(self.blocks):
-            for block in blocklist:
-                h = block(h)
+            if index in self.quant_layer:
+                h = blocklist[0](h)
+                h_, diff, ppl = blocklist[1](h)
+                if len(blocklist) == 3:
+                    h = blocklist[2](h)
+                quant_loss += diff
+            else:
+                for block in blocklist:
+                    h = block(h)
         # 글로벌 합 풀링
         h = torch.sum(self.activation(h), [2, 3])
         
@@ -259,7 +325,7 @@ class Discriminator(nn.Module):
         # 레이블이 제공된 경우 프로젝션 점수 추가
         out = out + torch.sum(self.embed(y) * h, 1, keepdim=True)
         
-        return out
+        return out, quant_loss, ppl
 
 
 class BigGAN(nn.Module):
@@ -276,8 +342,10 @@ class BigGAN(nn.Module):
         D_input = torch.cat([G_z, x], 0) if x is not None else G_z
         D_class = torch.cat([gy, dy], 0) if dy is not None else gy
         
-        D_out = self.D(D_input, D_class)
+        D_out, quant_loss, ppl = self.D(D_input, D_class)
         if x is not None:
-            return torch.split(D_out, [G_z.shape[0], x.shape[0]])
+            D_real, D_fake = torch.split(D_out, [G_z.shape[0], x.shape[0]])
+            quant_loss_real, quant_loss_fake = torch.split(quant_loss, (G_z.shape[0], x.shape[0]), dim=0)
+            return D_real, D_fake, quant_loss_real, quant_loss_fake, ppl.view(-1, 1)
         else:
-            return D_out
+            return D_out, quant_loss

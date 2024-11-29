@@ -62,10 +62,15 @@ def get_arg_parse():
     parser.add_argument('--D_ortho', type=float, help='Discriminator의 Ortho 값', default=0.0)
     parser.add_argument('--num_inception_images', type=int, help='인셉션 메트릭 계산 샘플 수', default=10000)
     parser.add_argument('--superclass', type=int, help='lable superclass 적용 여부', default=1)
+    parser.add_argument('--dict_size', type=int, help='dict size', default=10)
+    parser.add_argument('--commitment', type=float, help='commitment', default=1.0)
+    parser.add_argument('--dict_decay', type=float, help='dict decay', default=0.8)
+    # parser.add_argument('--quantization', type=int, help='quantization 적용 여부', default=0)
     
     args = parser.parse_args()
     
     args.superclass = args.superclass == 1
+    # args.quantization = args.quantization == 1
     
     return args
 
@@ -81,7 +86,7 @@ def main(args: argparse.Namespace):
     args.save_path = model_save_path
         
     logger = MainLogger(args)
-    logger.debug(f'args: {vars(args)}')
+    logger.debug(f'args: {'\n'.join([f"{key}: {value}" for key, value in vars(args).items()])}')
 
     logger.debug(f'init data preprocessing')
     
