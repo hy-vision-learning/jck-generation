@@ -106,7 +106,7 @@ class Generator(nn.Module):
         # 잠재 공간 및 아키텍처 파라미터
         self.dim_z = 128
         self.bottom_width = 4
-        self.is_attention = [0]
+        self.is_attention = [8, 16, 32]
         self.G_shared = False
         self.shared_dim = self.dim_z
         self.hier = False
@@ -239,7 +239,7 @@ class Discriminator(nn.Module):
     def __init__(self, skip_init=False, n_classes=100,
                  dict_size=10, dict_decay=0.8, commitment=0.5):
         super(Discriminator, self).__init__()
-        self.is_attention = [0]
+        self.is_attention = [8, 16, 32]
         # 1e-12 실험
         self.SN_eps = 1e-8
         self.n_classes = n_classes

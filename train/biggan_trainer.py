@@ -145,7 +145,6 @@ class BIGGANTrainer:
     def ortho(self, model, strength=1e-4, blacklist=[]):
         with torch.no_grad():
             for param in model.parameters():
-                # Only apply this to parameters with at least 2 axes, and not in the blacklist
                 if len(param.shape) < 2 or any([param is item for item in blacklist]):
                     continue
                 w = param.view(param.shape[0], -1)
