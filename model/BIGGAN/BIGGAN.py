@@ -15,54 +15,55 @@ class Quantize(nn.Module):
 	def __init__(self, dim, n_embed, commitment=1.0, decay=0.8, eps=1e-5):
 		super().__init__()
 
-		self.dim = dim
-		self.n_embed = n_embed
-		self.decay = decay
-		self.eps = eps
-		self.commitment = commitment
+		self.dim = dim  # 임베딩 벡터의 차원
+		self.n_embed = n_embed  # 임베딩 벡터의 개수
+		self.decay = decay  # 클러스터 크기 업데이트 시 감쇠 계수
+		self.eps = eps  # 안정성을 위한 작은 값
+		self.commitment = commitment  # 커밋먼트 손실 가중치
 
-		embed = torch.randn(dim, n_embed)
-		self.register_buffer('embed', embed)
-		self.register_buffer('cluster_size', torch.zeros(n_embed))
-		self.register_buffer('embed_avg', embed.clone())
+		embed = torch.randn(dim, n_embed)  # 임베딩 벡터를 정규분포로 초기화
+		self.register_buffer('embed', embed)  # 임베딩 벡터를 버퍼로 등록
+		self.register_buffer('cluster_size', torch.zeros(n_embed))  # 클러스터 크기 초기화
+		self.register_buffer('embed_avg', embed.clone())  # 임베딩 벡터의 평균 값 초기화
 
 	def forward(self, x, y=None):
-		x = x.permute(0, 2, 3, 1).contiguous()
-		input_shape = x.shape
-		flatten = x.reshape(-1, self.dim)
+		x = x.permute(0, 2, 3, 1).contiguous()  # 텐서 차원 변경 (배치, 높이, 너비, 채널)
+		input_shape = x.shape  # 입력 텐서의 형태 저장
+		flatten = x.reshape(-1, self.dim)  # 입력 텐서를 평탄화
 		dist = (
-		    flatten.pow(2).sum(1, keepdim=True)
-		    - 2 * flatten @ self.embed
-		    + self.embed.pow(2).sum(0, keepdim=True)
+		    flatten.pow(2).sum(1, keepdim=True)  # 각 벡터의 제곱 합
+		    - 2 * flatten @ self.embed  # 벡터 간의 내적 계산
+		    + self.embed.pow(2).sum(0, keepdim=True)  # 임베딩 벡터의 제곱 합
 		)
-		_, embed_ind = (-dist).max(1)
-		embed_onehot = F.one_hot(embed_ind, self.n_embed).type(flatten.dtype)
-		embed_ind = embed_ind.view(*x.shape[:-1])
-		quantize = self.embed_code(embed_ind).view(input_shape)
+		_, embed_ind = (-dist).max(1)  # 최소 거리를 가지는 임베딩 인덱스 찾기
+		embed_onehot = F.one_hot(embed_ind, self.n_embed).type(flatten.dtype)  # 원-핫 인코딩
+		embed_ind = embed_ind.view(*x.shape[:-1])  # 인덱스를 원래 형태로 재배열
+		quantize = self.embed_code(embed_ind).view(input_shape)  # 임베딩 코드로 변환
 
 		if self.training:
 			self.cluster_size.data.mul_(self.decay).add_(
-			    1 - self.decay, embed_onehot.sum(0)
+			    1 - self.decay, embed_onehot.sum(0)  # 클러스터 크기 업데이트
 			)
-			embed_sum = flatten.transpose(0, 1) @ embed_onehot
-			self.embed_avg.data.mul_(self.decay).add_(1 - self.decay, embed_sum)
-			n = self.cluster_size.sum()
+			embed_sum = flatten.transpose(0, 1) @ embed_onehot  # 임베딩 벡터 합산
+			self.embed_avg.data.mul_(self.decay).add_(1 - self.decay, embed_sum)  # 평균 임베딩 업데이트
+			n = self.cluster_size.sum()  # 전체 클러스터 크기 합계
 			cluster_size = (
-			    (self.cluster_size + self.eps) / (n + self.n_embed * self.eps) * n
+			    (self.cluster_size + self.eps) / (n + self.n_embed * self.eps) * n  # 클러스터 크기 정규화
 			)
-			embed_normalized = self.embed_avg / cluster_size.unsqueeze(0)
-			self.embed.data.copy_(embed_normalized)
+			embed_normalized = self.embed_avg / cluster_size.unsqueeze(0)  # 임베딩 벡터 정규화
+			self.embed.data.copy_(embed_normalized)  # 임베딩 벡터 업데이트
 
+		# 커밋먼트 손실 계산
 		diff = self.commitment*torch.mean(torch.mean((quantize.detach() - x).pow(2), dim=(1,2)),
 		                                  dim=(1,), keepdim=True)
-		quantize = x + (quantize - x).detach()
-		avg_probs = torch.mean(embed_onehot, 0)
-		perplexity = torch.exp(- torch.sum(avg_probs * torch.log(avg_probs + 1e-10)))
+		quantize = x + (quantize - x).detach()  # 그래디언트 흐름을 유지하면서 양자화된 값 사용
+		avg_probs = torch.mean(embed_onehot, 0)  # 평균 확률 계산
+		perplexity = torch.exp(- torch.sum(avg_probs * torch.log(avg_probs + 1e-10)))  # 퍼플렉서티 계산
 
-		return quantize.permute(0, 3, 1, 2).contiguous(), diff, perplexity
+		return quantize.permute(0, 3, 1, 2).contiguous(), diff, perplexity  # 출력 재배열 및 반환
 
 	def embed_code(self, embed_id):
-		return F.embedding(embed_id, self.embed.transpose(0, 1))
+		return F.embedding(embed_id, self.embed.transpose(0, 1))  # 임베딩 인덱스를 실제 임베딩 벡터로 변환
 
 
 class Generator(nn.Module):
@@ -107,11 +108,11 @@ class Generator(nn.Module):
         self.dim_z = 128
         self.bottom_width = 4
         self.is_attention = [8, 16, 32]
-        self.G_shared = False
+        self.G_shared = True
         self.shared_dim = self.dim_z
-        self.hier = False
+        self.hier = True
         self.cross_replica = False
-        self.mybn = False
+        self.mybn = True
         # 1e-12 실험
         self.SN_eps = 1e-8
         self.n_classes = n_classes
@@ -124,8 +125,13 @@ class Generator(nn.Module):
         # 어텐션을 적용할 위치 결정
         self.attention = {2**i: (2**i in [item for item in self.is_attention]) for i in range(3,6)}
 
-        self.num_slots = 1
-        self.z_chunk_size = 0
+        if self.hier:
+            self.num_slots = len(self.in_channels) + 1
+            self.z_chunk_size = (self.dim_z // self.num_slots)
+            self.dim_z = self.z_chunk_size *  self.num_slots
+        else:
+            self.num_slots = 1
+            self.z_chunk_size = 0
 
         # 스펙트럴 정규화가 적용된 컨볼루션 및 선형 레이어 정의
         self.which_conv = functools.partial(layers.SNConv2d,
@@ -186,7 +192,8 @@ class Generator(nn.Module):
             if (isinstance(module, nn.Conv2d) 
                 or isinstance(module, nn.Linear) 
                 or isinstance(module, nn.Embedding)):
-                init.normal_(module.weight, 0, 0.02)
+                init.orthogonal_(module.weight)
+                # init.normal_(module.weight, 0, 0.02)
                 self.param_count += sum([p.data.nelement() for p in module.parameters()])
         print(f'Param count for G\'s initialized parameters: {self.param_count}')
 
@@ -299,7 +306,8 @@ class Discriminator(nn.Module):
         self.param_count = 0
         for module in self.modules():
             if (isinstance(module, nn.Conv2d) or isinstance(module, nn.Linear) or isinstance(module, nn.Embedding)):
-                init.normal_(module.weight, 0, 0.02)
+                # init.normal_(module.weight, 0, 0.02)
+                init.orthogonal_(module.weight)
                 self.param_count += sum([p.data.nelement() for p in module.parameters()])
         print('Param count for D\'s initialized parameters: %d' % self.param_count)
 

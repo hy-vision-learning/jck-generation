@@ -50,6 +50,8 @@ def get_arg_parse():
     parser.add_argument('--model', type=ModelEnum, help='학습 모델', choices=list(ModelEnum), default=ModelEnum.DCGAN)
     parser.add_argument('--num_workers', type=int, help='DataLoader workers', default=4)
     
+    parser.add_argument('--load_model', type=str, help='학습을 이어갈 모델 위치', default=None)
+    
     parser.add_argument('--batch_size', type=int, help='배치 크기', default=50)
     parser.add_argument('--num_epochs', type=int, help='에포크 수', default=500)
     parser.add_argument('--num_D_steps', type=int, help='Discriminator 단계 수', default=4)

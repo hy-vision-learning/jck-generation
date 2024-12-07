@@ -21,7 +21,7 @@ from tqdm import tqdm, trange
 import copy
 import os
 import json
-import time
+from time import time
 
 import functools
 
@@ -102,6 +102,12 @@ class BIGGANTrainer:
         self.metrics = Metrics(self.args)
         self.args.num_classes = 20 if self.args.superclass else 100
         self.superclass_mapping = inceptionID.super_class_mapping()
+        
+        
+    def infiniteloop(self, dataloader):
+        while True:
+            for x, y in iter(dataloader):
+                yield x, y
         
     
     def get_data_loader(self, batch_size):
@@ -264,7 +270,7 @@ class BIGGANTrainer:
         
         
     def save_and_sample(self, z_, y_, fixed_z, fixed_y):
-        self.__save_model('sample', self.state_dict['epoch'], 'sample.pt')
+        self.__save_model('sample', self.state_dict['itr'], 'sample.pt')
            
         with torch.no_grad():
             fixed_Gz = self.ema_g(fixed_z, self.ema_g.shared(fixed_y))
@@ -289,6 +295,8 @@ class BIGGANTrainer:
         image_filename = os.path.join(image_path, f'samples{self.state_dict["itr"]}.jpg')
         torchvision.utils.save_image(all_images, image_filename, nrow=10, normalize=True)
         
+        del z_, y, ims, all_images, fixed_Gz
+        
     def run(self):
         self.model_g = model.Generator(n_classes=self.args.num_classes).to(self.device)
         self.model_d = model.Discriminator(
@@ -298,11 +306,7 @@ class BIGGANTrainer:
             commitment=self.args.commitment
         ).to(self.device)
         
-        self.optim_g = optim.Adam(params=self.model_g.parameters(), lr=2e-4, betas=(0.0, 0.999))
-        self.optim_d = optim.Adam(params=self.model_d.parameters(), lr=2e-4, betas=(0.0, 0.999))
-        
         self.ema_g = model.Generator(skip_init=True, n_classes=self.args.num_classes).to(self.device)
-        self.ema = EMA(self.model_g, self.ema_g, self.args.ema_decay, self.args.ema_start)
         
         self.biggan = model.BigGAN(self.model_g, self.model_d)
         # self.logger.debug(f'G: {G}\nD: {D}')
@@ -310,7 +314,7 @@ class BIGGANTrainer:
         self.logger.debug('Number of params in G: {} D: {}'.format(
             *[sum([p.data.nelement() for p in net.parameters()]) for net in [self.model_g, self.model_d]]))
         
-        self.state_dict = {'itr': 0, 'epoch': 0, 'best_IS': 0, 'best_FID': 999999, 'best_intra_FID': 999999}
+        self.state_dict = {'itr': 0, 'best_IS': 0, 'best_FID': 999999, 'best_intra_FID': 999999}
         
         D_batch_size = self.args.batch_size * self.args.num_D_steps
         loader = self.get_data_loader(batch_size=D_batch_size)
@@ -324,33 +328,82 @@ class BIGGANTrainer:
         sample = functools.partial(self.sample, G=self.ema_g, z_=z_, y_=y_)
         
         full_test_counter = 1
-        for epoch in range(self.state_dict['epoch'], self.args.num_epochs):
-            for i, (x, y) in enumerate(tqdm(loader, ncols=0)):
-                self.state_dict['itr'] += 1
+        
+        if self.args.load_model != None:
+            saved_state = torch.load(self.args.load_model)
+            self.state_dict['itr'] = saved_state['epoch']
+            self.model_g.load_state_dict(saved_state['model_g'])
+            self.model_d.load_state_dict(saved_state['model_d'])
+            self.optim_g.load_state_dict(saved_state['optim_g'])
+            self.optim_d.load_state_dict(saved_state['optim_d'])
+            self.ema_g.load_state_dict(saved_state['model_ema'])
+            self.state_dict = saved_state['state_dict']
+        
+        self.ema = EMA(self.model_g, self.ema_g, self.args.ema_decay, self.args.ema_start)
+        
+        self.optim_g = optim.Adam(params=self.model_g.parameters(), lr=2e-4, betas=(0.0, 0.999))
+        self.optim_d = optim.Adam(params=self.model_d.parameters(), lr=1e-4, betas=(0.0, 0.999))
+        
+        datalooper = self.infiniteloop(loader)
+        t_start = time()
+        start_itr = self.state_dict['itr']
+        for i in range(start_itr, self.args.num_epochs + 1):
+            x, y = next(datalooper)
+            self.state_dict['itr'] += 1
                 
-                self.model_g.train()
-                self.model_d.train()
-                self.ema_g.train()
-                
-                x, y = x.to(self.device), y.to(self.device)
-                G_loss, D_loss_real, D_loss_fake, quant_loss_G, ppl \
-                    = self.train(x, y, z_, y_)
-                
-                if not (self.state_dict['itr'] % 100): 
-                    self.logger.debug(f'itr: {self.state_dict["itr"]}\tG_loss: {G_loss:.4f}\t' + 
-                                      f'D_loss_real: {D_loss_real:.4f}\tD_loss_fake: {D_loss_fake:.4f}\t' + 
-                                      f'quant_loss_G: {quant_loss_G:.4f}\tppl: {ppl:.4f}')
-                
-                if not (self.state_dict['itr'] % self.args.save_every):
-                    self.save_and_sample(z_, y_, fixed_z, fixed_y)
-
-                if not (self.state_dict['itr'] % self.args.test_every):
-                    if self.args.full_test_counter and not (full_test_counter % self.args.full_test_counter):
-                        self.test(sample, full=True)
-                        full_test_counter = 1
-                    else:
-                        self.test(sample)
-                        full_test_counter += 1
-                        self.logger.debug(f'Full test remains: {self.args.full_test_counter - full_test_counter}')
+            self.model_g.train()
+            self.model_d.train()
+            self.ema_g.train()
             
-            self.state_dict['epoch'] += 1
+            x, y = x.to(self.device), y.to(self.device)
+            G_loss, D_loss_real, D_loss_fake, quant_loss_G, ppl \
+                = self.train(x, y, z_, y_)
+            
+            if not (self.state_dict['itr'] % 100): 
+                self.logger.debug(f'itr: {self.state_dict["itr"]}\tG_loss: {G_loss:.4f}\t' + 
+                                    f'D_loss_real: {D_loss_real:.4f}\tD_loss_fake: {D_loss_fake:.4f}\t' + 
+                                    f'quant_loss_G: {quant_loss_G:.4f}\tppl: {ppl:.4f}\ttime: {time_to_str(time() - t_start)}')
+                t_start = time()
+            
+            if not (self.state_dict['itr'] % self.args.save_every):
+                self.save_and_sample(z_, y_, fixed_z, fixed_y)
+
+            if not (self.state_dict['itr'] % self.args.test_every):
+                if self.args.full_test_counter and not (full_test_counter % self.args.full_test_counter):
+                    self.test(sample, full=True)
+                    full_test_counter = 1
+                else:
+                    self.test(sample)
+                    full_test_counter += 1
+                    self.logger.debug(f'Full test remains: {self.args.full_test_counter - full_test_counter}')
+        
+        # for epoch in range(self.state_dict['epoch'], self.args.num_epochs):
+        #     for i, (x, y) in enumerate(tqdm(loader, ncols=0)):
+        #         self.state_dict['itr'] += 1
+                
+        #         self.model_g.train()
+        #         self.model_d.train()
+        #         self.ema_g.train()
+                
+        #         x, y = x.to(self.device), y.to(self.device)
+        #         G_loss, D_loss_real, D_loss_fake, quant_loss_G, ppl \
+        #             = self.train(x, y, z_, y_)
+                
+        #         if not (self.state_dict['itr'] % 100): 
+        #             self.logger.debug(f'itr: {self.state_dict["itr"]}\tG_loss: {G_loss:.4f}\t' + 
+        #                               f'D_loss_real: {D_loss_real:.4f}\tD_loss_fake: {D_loss_fake:.4f}\t' + 
+        #                               f'quant_loss_G: {quant_loss_G:.4f}\tppl: {ppl:.4f}')
+                
+        #         if not (self.state_dict['itr'] % self.args.save_every):
+        #             self.save_and_sample(z_, y_, fixed_z, fixed_y)
+
+        #         if not (self.state_dict['itr'] % self.args.test_every):
+        #             if self.args.full_test_counter and not (full_test_counter % self.args.full_test_counter):
+        #                 self.test(sample, full=True)
+        #                 full_test_counter = 1
+        #             else:
+        #                 self.test(sample)
+        #                 full_test_counter += 1
+        #                 self.logger.debug(f'Full test remains: {self.args.full_test_counter - full_test_counter}')
+            
+        #     self.state_dict['epoch'] += 1

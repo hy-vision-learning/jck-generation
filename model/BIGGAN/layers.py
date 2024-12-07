@@ -218,31 +218,42 @@ class myBN(nn.Module):
     self.eps = eps
     # Momentum
     self.momentum = momentum
+    self.num_channels = num_channels
     # Register buffers
-    self.register_buffer('stored_mean', torch.zeros(num_channels))
-    self.register_buffer('stored_var',  torch.ones(num_channels))
+    self.register_buffer('stored_mean', torch.zeros(self.num_channels))
+    self.register_buffer('stored_var',  torch.ones(self.num_channels))
     self.register_buffer('accumulation_counter', torch.zeros(1))
     # Accumulate running means and vars
     self.accumulate_standing = False
     
   # reset standing stats
   def reset_stats(self):
-    self.stored_mean[:] = 0
-    self.stored_var[:] = 0
-    self.accumulation_counter[:] = 0
+    with torch.no_grad():
+          self.stored_mean = torch.zeros(self.num_channels)
+          self.stored_var = torch.zeros(self.num_channels)
+          self.accumulation_counter = torch.zeros(1)
+    # self.stored_mean[:] = 0
+    # self.stored_var[:] = 0
+    # self.accumulation_counter[:] = 0
     
   def forward(self, x, gain, bias):
     if self.training:
       out, mean, var = manual_bn(x, gain, bias, return_mean_var=True, eps=self.eps)
       # If accumulating standing stats, increment them
       if self.accumulate_standing:
-        self.stored_mean[:] = self.stored_mean + mean.data
-        self.stored_var[:] = self.stored_var + var.data
+        with torch.no_grad():
+          self.stored_mean = self.stored_mean + mean
+          self.stored_var = self.stored_var + var
+        # self.stored_mean[:] = self.stored_mean + mean.data
+        # self.stored_var[:] = self.stored_var + var.data
         self.accumulation_counter += 1.0
       # If not accumulating standing stats, take running averages
       else:
-        self.stored_mean[:] = self.stored_mean * (1 - self.momentum) + mean * self.momentum
-        self.stored_var[:] = self.stored_var * (1 - self.momentum) + var * self.momentum
+        with torch.no_grad():
+          self.stored_mean = self.stored_mean * (1 - self.momentum) + mean * self.momentum
+          self.stored_var = self.stored_var * (1 - self.momentum) + var * self.momentum
+        # self.stored_mean[:] = self.stored_mean * (1 - self.momentum) + mean * self.momentum
+        # self.stored_var[:] = self.stored_var * (1 - self.momentum) + var * self.momentum
       return out
     # If not in training mode, use the stored statistics
     else:         
