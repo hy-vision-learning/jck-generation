@@ -341,7 +341,7 @@ class BIGGANTrainer:
         
         self.ema = EMA(self.model_g, self.ema_g, self.args.ema_decay, self.args.ema_start)
         
-        self.optim_g = optim.Adam(params=self.model_g.parameters(), lr=2e-4, betas=(0.0, 0.999))
+        self.optim_g = optim.Adam(params=self.model_g.parameters(), lr=1e-4, betas=(0.0, 0.999))
         self.optim_d = optim.Adam(params=self.model_d.parameters(), lr=1e-4, betas=(0.0, 0.999))
         
         datalooper = self.infiniteloop(loader)

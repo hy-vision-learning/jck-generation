@@ -319,7 +319,7 @@ class Discriminator(nn.Module):
         for index, blocklist in enumerate(self.blocks):
             if index in self.quant_layer:
                 h = blocklist[0](h)
-                h_, diff, ppl = blocklist[1](h)
+                h, diff, ppl = blocklist[1](h)
                 if len(blocklist) == 3:
                     h = blocklist[2](h)
                 quant_loss += diff
